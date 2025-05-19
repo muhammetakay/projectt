@@ -2,6 +2,8 @@ package main
 
 import (
 	"log"
+	"projectt/config"
+	"projectt/migrations"
 	"projectt/socket"
 	"time"
 
@@ -19,9 +21,9 @@ func main() {
 	}
 
 	// database connection
-	// config.ConnectDatabase()
+	config.ConnectDatabase()
 	// migrations and seeders
-	// migrations.Migrate(config.DB)
+	migrations.Migrate(config.DB)
 
 	// start socket server
 	socket.StartServer()
