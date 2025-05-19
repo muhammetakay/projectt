@@ -6,12 +6,13 @@ import (
 	"log"
 	"net"
 	"os"
+	"projectt/models/request"
 	"sync"
 )
 
 type GameConnection struct {
 	conn     net.Conn
-	nickname string
+	username string
 	server   *GameServer
 }
 
@@ -82,12 +83,36 @@ func (gc *GameConnection) HandleConnection() {
 }
 
 func (gc *GameConnection) handleLogin(data any) {
-	username, ok := data.(map[string]any)["username"].(string)
-	if !ok {
+	// Convert data to LoginRequest
+	loginData, err := json.Marshal(data)
+	if err != nil {
 		gc.SendMessage(Message{
-			Type: SystemMessage,
+			Type: ErrorMessage,
 			Data: map[string]any{
-				"message": "error.username.invalid",
+				"message": "error.invalid.request",
+			},
+		})
+		return
+	}
+
+	var loginRequest request.LoginRequest
+	if err := json.Unmarshal(loginData, &loginRequest); err != nil {
+		gc.SendMessage(Message{
+			Type: ErrorMessage,
+			Data: map[string]any{
+				"message": "error.invalid.request",
+			},
+		})
+		return
+	}
+
+	// Validate request
+	if err := loginRequest.Validate(); err != nil {
+		gc.SendMessage(Message{
+			Type: ErrorMessage,
+			Data: map[string]any{
+				"message": "error.validation",
+				"error":   err.Error(),
 			},
 		})
 		return
@@ -95,20 +120,20 @@ func (gc *GameConnection) handleLogin(data any) {
 
 	// TODO: Add password validation here
 
-	gc.nickname = username
+	gc.username = loginRequest.Username
 	gc.SendMessage(Message{
-		Type: SystemMessage,
+		Type: SuccessMessage,
 		Data: map[string]any{
 			"message":  "success.login",
-			"username": username,
+			"username": loginRequest.Username,
 		},
 	})
 }
 
 func (gc *GameConnection) handleChat(data any) {
-	if gc.nickname == "" {
+	if gc.username == "" {
 		gc.SendMessage(Message{
-			Type: SystemMessage,
+			Type: ErrorMessage,
 			Data: map[string]any{
 				"message": "error.login.required",
 			},
@@ -121,11 +146,11 @@ func (gc *GameConnection) handleChat(data any) {
 		return
 	}
 
-	fmt.Printf("Message from %s: %s\n", gc.nickname, message)
+	fmt.Printf("Message from %s: %s\n", gc.username, message)
 	gc.SendMessage(Message{
 		Type: ChatMessage,
 		Data: map[string]any{
-			"from":    gc.nickname,
+			"from":    gc.username,
 			"message": message,
 		},
 	})

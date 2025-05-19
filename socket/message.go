@@ -8,6 +8,8 @@ const (
 	SystemMessage       MessageType = "system"
 	UnauthorizedMessage MessageType = "unauthorized"
 	UnknownMessage      MessageType = "unknown"
+	ErrorMessage        MessageType = "error"
+	SuccessMessage      MessageType = "success"
 )
 
 type Message struct {
