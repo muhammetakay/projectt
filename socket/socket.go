@@ -6,14 +6,16 @@ import (
 	"log"
 	"net"
 	"os"
+	"projectt/config"
+	"projectt/models"
 	"projectt/models/request"
 	"sync"
 )
 
 type GameConnection struct {
-	conn     net.Conn
-	username string
-	server   *GameServer
+	conn   net.Conn
+	player *models.Player
+	server *GameServer
 }
 
 type GameServer struct {
@@ -118,20 +120,26 @@ func (gc *GameConnection) handleLogin(data any) {
 		return
 	}
 
-	// TODO: Add password validation here
+	if err := config.DB.Where("nickname = ?", loginRequest.Nickname).First(&gc.player).Error; err != nil {
+		gc.SendMessage(Message{
+			Type: ErrorMessage,
+			Data: map[string]any{
+				"message": "error.player.not_found",
+			},
+		})
+	}
 
-	gc.username = loginRequest.Username
 	gc.SendMessage(Message{
 		Type: SuccessMessage,
 		Data: map[string]any{
 			"message":  "success.login",
-			"username": loginRequest.Username,
+			"username": gc.player.Nickname,
 		},
 	})
 }
 
 func (gc *GameConnection) handleChat(data any) {
-	if gc.username == "" {
+	if gc.player == nil {
 		gc.SendMessage(Message{
 			Type: ErrorMessage,
 			Data: map[string]any{
@@ -146,11 +154,11 @@ func (gc *GameConnection) handleChat(data any) {
 		return
 	}
 
-	fmt.Printf("Message from %s: %s\n", gc.username, message)
+	fmt.Printf("Message from %s: %s\n", gc.player.UpdatedAt, message)
 	gc.SendMessage(Message{
 		Type: ChatMessage,
 		Data: map[string]any{
-			"from":    gc.username,
+			"from":    gc.player.Nickname,
 			"message": message,
 		},
 	})
