@@ -11,6 +11,7 @@ import (
 	"projectt/types"
 	"sort"
 	"strings"
+	"time"
 
 	"gorm.io/gorm"
 )
@@ -25,6 +26,14 @@ type WorldGenerator struct{}
 type Vector2 struct {
 	X int `json:"x"`
 	Y int `json:"y"`
+}
+
+// Direction vectors for adjacency checks
+var directions = [][2]int{
+	{-1, 0}, // left
+	{1, 0},  // right
+	{0, -1}, // top
+	{0, 1},  // bottom
 }
 
 func (m *WorldGenerator) GenerateWorld(db *gorm.DB) {
@@ -71,6 +80,9 @@ func (m *WorldGenerator) GenerateWorld(db *gorm.DB) {
 				tx.Commit()
 			}
 		}()
+
+		// Create map to hold tiles
+		tileStore := make(map[string]models.MapTile)
 
 		// Process each feature
 		for i, feature := range features {
@@ -140,40 +152,78 @@ func (m *WorldGenerator) GenerateWorld(db *gorm.DB) {
 				continue
 			}
 
-			mapTiles := make([]models.MapTile, 0)
 			if geometry["type"] == "MultiPolygon" {
 				for _, polygonGroup := range coordinates {
 					if pg, ok := polygonGroup.([]interface{}); ok {
 						for _, polygon := range pg {
-							drawPolygon(polygon, country, &mapTiles)
+							drawPolygon(polygon, country, &tileStore)
 						}
 					}
 				}
 			} else if geometry["type"] == "Polygon" {
-				drawPolygon(coordinates[0], country, &mapTiles)
-			}
-
-			// Save map tiles to the database
-			if err := tx.CreateInBatches(&mapTiles, 1000).Error; err != nil {
-				log.Fatalf("Error creating map tiles for country %s: %v\n", country.Name, err)
+				drawPolygon(coordinates[0], country, &tileStore)
 			}
 		}
 
-		// Save translations to file - disabled for not needed anymore
-		// translationsJSON, err := json.MarshalIndent(translations, "", "  ")
-		// if err != nil {
-		// 	fmt.Println("Error marshaling translations:", err)
-		// 	return
-		// }
+		// Convert map to slice and check borders
+		fmt.Printf("\nStarting border detection for %d tiles...\n", len(tileStore))
+		startTime := time.Now()
 
-		// if err := os.WriteFile("migrations/countries.json", translationsJSON, 0644); err != nil {
-		// 	fmt.Println("Error writing translations file:", err)
-		// 	return
-		// }
+		mapTiles := make([]models.MapTile, 0, len(tileStore))
+		coordToIndex := make(map[string]int)
+
+		// First pass: Convert to slice
+		fmt.Println("\nFirst pass: Converting tiles to slice...")
+		for _, tile := range tileStore {
+			coordToIndex[fmt.Sprintf("%d:%d", tile.CoordX, tile.CoordY)] = len(mapTiles)
+			mapTiles = append(mapTiles, tile)
+		}
+		fmt.Printf("First pass completed in %v\n", time.Since(startTime))
+
+		// Second pass: Check borders
+		fmt.Println("\nSecond pass: Checking borders...")
+		borderCount := 0
+		for i, tile := range mapTiles {
+			isBorder := false
+
+			// Check all four directions
+			for _, dir := range directions {
+				neighborX := tile.CoordX + dir[0]
+				neighborY := tile.CoordY + dir[1]
+				neighborKey := fmt.Sprintf("%d:%d", neighborX, neighborY)
+
+				if neighborIdx, exists := coordToIndex[neighborKey]; exists {
+					// Neighbor exists, check if it's from a different country
+					if mapTiles[neighborIdx].OwnerCountryID != tile.OwnerCountryID {
+						isBorder = true
+						mapTiles[neighborIdx].IsBorder = true
+					}
+				} else {
+					// No neighbor in this direction means it's a border
+					isBorder = true
+				}
+			}
+
+			mapTiles[i].IsBorder = isBorder
+			if isBorder {
+				borderCount++
+			}
+		}
+
+		fmt.Printf("Border detection completed in %v\n", time.Since(startTime))
+		fmt.Printf("Found %d border tiles (%.2f%% of total)\n",
+			borderCount, float64(borderCount)/float64(len(mapTiles))*100)
+
+		// Save map tiles to the database
+		fmt.Println("\nSaving tiles to database...")
+		if err := tx.CreateInBatches(&mapTiles, 1000).Error; err != nil {
+			log.Fatalf("Error creating map tiles: %v\n", err)
+		}
+		fmt.Printf("World generation completed in %v\n", time.Since(startTime))
 	}
 }
 
-func drawPolygon(polygon any, country models.Country, mapTiles *[]models.MapTile) {
+func drawPolygon(polygon any, country models.Country, tileStore *map[string]models.MapTile) {
 	if points, ok := polygon.([]interface{}); ok {
 		tileCoords := make([]Vector2, 0)
 		for _, point := range points {
@@ -190,17 +240,16 @@ func drawPolygon(polygon any, country models.Country, mapTiles *[]models.MapTile
 		// Draw polygon lines
 		for i := 0; i < len(tileCoords); i++ {
 			current := tileCoords[i]
-			next := tileCoords[(i+1)%len(tileCoords)] // Wrap around to the first point
-
-			drawLine(current, next, country, mapTiles)
+			next := tileCoords[(i+1)%len(tileCoords)]
+			drawLine(current, next, country, tileStore)
 		}
 
-		// Fill the polygon
-		fillPolygon(tileCoords, country, mapTiles)
+		// Fill the polygon with unique tiles
+		fillPolygon(tileCoords, country, tileStore)
 	}
 }
 
-func drawLine(start, end Vector2, country models.Country, mapTiles *[]models.MapTile) {
+func drawLine(start, end Vector2, country models.Country, tileStore *map[string]models.MapTile) {
 	x0 := start.X
 	y0 := start.Y
 	x1 := end.X
@@ -226,16 +275,14 @@ func drawLine(start, end Vector2, country models.Country, mapTiles *[]models.Map
 	err := dx - dy
 
 	for {
-		// Create a new tile at the current coordinates
-		mapTile := models.MapTile{
+		coordKey := fmt.Sprintf("%d:%d", x0, y0)
+
+		(*tileStore)[coordKey] = models.MapTile{
 			CoordX:         x0,
 			CoordY:         y0,
 			OwnerCountryID: country.ID,
 			TileType:       types.TileTypeGround,
 		}
-
-		// Doğrudan slice'a ekleme
-		*mapTiles = append(*mapTiles, mapTile)
 
 		if x0 == x1 && y0 == y1 {
 			break
@@ -253,7 +300,7 @@ func drawLine(start, end Vector2, country models.Country, mapTiles *[]models.Map
 	}
 }
 
-func fillPolygon(vertices []Vector2, country models.Country, mapTiles *[]models.MapTile) {
+func fillPolygon(vertices []Vector2, country models.Country, tileStore *map[string]models.MapTile) {
 	if len(vertices) < 3 {
 		return
 	}
@@ -303,15 +350,14 @@ func fillPolygon(vertices []Vector2, country models.Country, mapTiles *[]models.
 			endX := intersections[i+1]
 
 			for x := startX; x <= endX; x++ {
-				mapTile := models.MapTile{
+				coordKey := fmt.Sprintf("%d:%d", x, y)
+
+				(*tileStore)[coordKey] = models.MapTile{
 					CoordX:         x,
 					CoordY:         y,
 					OwnerCountryID: country.ID,
 					TileType:       types.TileTypeGround,
 				}
-
-				// Doğrudan slice'a ekleme
-				*mapTiles = append(*mapTiles, mapTile)
 			}
 		}
 	}
