@@ -12,7 +12,8 @@ func Migrate(db *gorm.DB) {
 	// Wipe(db)
 	// create tables
 	err := db.AutoMigrate(
-		&models.User{},
+		&models.Country{}, &models.MapTile{},
+		&models.Unit{}, &models.Player{},
 	)
 	if err != nil {
 		log.Fatal("Migration failed:", err)
