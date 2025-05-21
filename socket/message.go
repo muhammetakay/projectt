@@ -1,18 +1,23 @@
 package socket
 
-type MessageType string
+type MessageType int
 
 const (
-	LoginMessage        MessageType = "login"
-	ChatMessage         MessageType = "chat"
-	SystemMessage       MessageType = "system"
-	UnauthorizedMessage MessageType = "unauthorized"
-	UnknownMessage      MessageType = "unknown"
-	ErrorMessage        MessageType = "error"
-	SuccessMessage      MessageType = "success"
+	LoginMessage MessageType = iota
+	ChatMessage
+	SystemMessage
+	UnauthorizedMessage
+	UnknownMessage
+	PlayerMovementMessage
+	PlayerJoinedMessage
+	PlayerLeftMessage
+	PingPongMessage
+	SyncStateMessage
+	UnitActionMessage
 )
 
 type Message struct {
-	Type MessageType `json:"type"`
-	Data any         `json:"data"`
+	Type  MessageType `json:"type"`
+	Data  any         `json:"data"`
+	Error string      `json:"error"`
 }

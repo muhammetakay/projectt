@@ -23,8 +23,11 @@ func Seed(db *gorm.DB) {
 	db.First(&tile, "owner_country_id = ?", country.ID)
 
 	// player
-	testPlayer := models.Player{Nickname: "Ryuzaki", CountryID: country.ID, CoordX: tile.CoordX, CoordY: tile.CoordY}
-	db.FirstOrCreate(&testPlayer, models.Player{Nickname: testPlayer.Nickname})
+	testPlayers := []string{"Ryuzaki", "Ahmet", "Mustafa"}
+	for _, player := range testPlayers {
+		testPlayer := models.Player{Nickname: player, CountryID: country.ID, CoordX: tile.CoordX, CoordY: tile.CoordY}
+		db.FirstOrCreate(&testPlayer, models.Player{Nickname: testPlayer.Nickname})
+	}
 
 	// disable silent mode
 	db.Logger = logger.Default.LogMode(logger.Info)
