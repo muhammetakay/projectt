@@ -19,8 +19,10 @@ import (
 )
 
 const (
-	MaxConnections  = 100
-	MaxViewDistance = 20
+	MaxConnections       = 100
+	ChunkSize            = 16
+	MaxViewChunkDistance = 3
+	MaxViewDistance      = ChunkSize * MaxViewChunkDistance
 )
 
 type GameConnection struct {
@@ -165,6 +167,8 @@ func (gc *GameConnection) HandleConnection() {
 			gc.handleChat(msg.Data)
 		case PlayerMovementMessage:
 			gc.handleMovement(msg.Data)
+		case ChunkRequestMessage:
+			gc.handleChunkRequest(msg.Data)
 		default:
 			gc.SendMessage(Message{
 				Type: UnknownMessage,
@@ -238,7 +242,31 @@ func (gc *GameConnection) handleLogin(data any) {
 	})
 
 	// Send initial sync state
-	gc.sendSyncState()
+	// gc.sendSyncState()
+
+	// Send initial chunk data
+	// gc.sendInitialChunks()
+}
+
+func (gc *GameConnection) sendInitialChunks() {
+	// Calculate player's current chunk
+	playerChunkX, playerChunkY := gc.player.GetChunkCoord(ChunkSize)
+
+	// Create chunk requests for current and surrounding chunks
+	chunks := make([]request.Chunk, 0)
+
+	// Add player's current chunk and surrounding chunks
+	for dx := -MaxViewChunkDistance; dx <= MaxViewChunkDistance; dx++ {
+		for dy := -MaxViewChunkDistance; dy <= MaxViewChunkDistance; dy++ {
+			chunks = append(chunks, request.Chunk{
+				ChunkX: playerChunkX + dx,
+				ChunkY: playerChunkY + dy,
+			})
+		}
+	}
+
+	// Use existing chunk request handler
+	gc.handleChunkRequest(chunks)
 }
 
 func (gc *GameConnection) handleChat(data any) {
@@ -301,8 +329,12 @@ func (gc *GameConnection) handleMovement(data any) {
 	// Check if movement is within allowed range (e.g., 1 tile)
 	if distance > 1.5 {
 		gc.SendMessage(Message{
-			Type:  PlayerMovementMessage,
-			Error: "error.movement.too_far",
+			Type: PlayerMovementMessage,
+			Data: map[string]any{
+				"player":  gc.player,
+				"coord_x": gc.player.CoordX,
+				"coord_y": gc.player.CoordY,
+			},
 		})
 		return
 	}
@@ -314,10 +346,15 @@ func (gc *GameConnection) handleMovement(data any) {
 	targetTile, found := gc.server.tiles[targetTileKey]
 	gc.server.mu.RUnlock()
 
+	// Check if target tile exists and is walkable
 	if !found || targetTile.TileType != types.TileTypeGround {
 		gc.SendMessage(Message{
-			Type:  PlayerMovementMessage,
-			Error: "error.movement.invalid_tile",
+			Type: PlayerMovementMessage,
+			Data: map[string]any{
+				"player":  gc.player,
+				"coord_x": gc.player.CoordX,
+				"coord_y": gc.player.CoordY,
+			},
 		})
 		return
 	}
@@ -335,9 +372,85 @@ func (gc *GameConnection) handleMovement(data any) {
 			"coord_y": gc.player.CoordY,
 		},
 	}, gc.player.CoordX, gc.player.CoordY)
+}
 
-	// Send sync state to the player - EXPERIMENTAL
-	gc.sendSyncState()
+func (gc *GameConnection) handleChunkRequest(data any) {
+	if gc.player == nil {
+		gc.SendMessage(Message{
+			Type:  ChunkRequestMessage,
+			Error: "error.login.required",
+		})
+		return
+	}
+
+	// Convert data to []ChunkRequest
+	chunkData, err := json.Marshal(data)
+	if err != nil {
+		gc.SendMessage(Message{
+			Type:  ChunkRequestMessage,
+			Error: "error.invalid.request",
+		})
+		return
+	}
+
+	var chunkReqest request.ChunkRequest
+	if err := json.Unmarshal(chunkData, &chunkReqest); err != nil {
+		gc.SendMessage(Message{
+			Type:  ChunkRequestMessage,
+			Error: "error.invalid.request",
+		})
+		return
+	}
+	chunks := chunkReqest.Chunks
+
+	// Calculate player's current chunk
+	playerChunkX, playerChunkY := gc.player.GetChunkCoord(ChunkSize)
+
+	// Process each requested chunk
+	responseChunks := make(map[string][]models.MapTile)
+
+	gc.server.mu.RLock()
+	defer gc.server.mu.RUnlock()
+
+	for _, chunk := range chunks {
+		// Check if requested chunk is within MaxViewChunkDistance
+		chunkDx := chunk.ChunkX - playerChunkX
+		chunkDy := chunk.ChunkY - playerChunkY
+		chunkDistance := math.Sqrt(float64(chunkDx*chunkDx + chunkDy*chunkDy))
+
+		if chunkDistance > MaxViewChunkDistance {
+			continue // Skip chunks that are too far away
+		}
+
+		// Calculate chunk boundaries
+		startX := chunk.ChunkX * ChunkSize
+		startY := chunk.ChunkY * ChunkSize
+		endX := startX + ChunkSize
+		endY := startY + ChunkSize
+
+		chunkTiles := make([]models.MapTile, 0)
+
+		// Collect tiles in this chunk
+		for x := startX; x < endX; x++ {
+			for y := startY; y < endY; y++ {
+				if tile, exists := gc.server.tiles[fmt.Sprintf("%d,%d", x, y)]; exists {
+					chunkTiles = append(chunkTiles, tile)
+				}
+			}
+		}
+
+		// Add to response if chunk has tiles
+		chunkKey := fmt.Sprintf("%d,%d", chunk.ChunkX, chunk.ChunkY)
+		responseChunks[chunkKey] = chunkTiles
+	}
+
+	// Send chunk data
+	gc.SendMessage(Message{
+		Type: ChunkDataMessage,
+		Data: map[string]any{
+			"chunks": responseChunks,
+		},
+	})
 }
 
 func (gc *GameConnection) ReadMessage() (Message, error) {
@@ -433,32 +546,6 @@ func (gc *GameConnection) sendSyncState() {
 	gc.server.mu.RLock()
 	defer gc.server.mu.RUnlock()
 
-	// Collect nearby tiles more efficiently
-	nearbyTiles := make([]models.MapTile, 0)
-
-	// Calculate bounds for tile checking
-	minX := gc.player.CoordX - int(MaxViewDistance)
-	maxX := gc.player.CoordX + int(MaxViewDistance)
-	minY := gc.player.CoordY - int(MaxViewDistance)
-	maxY := gc.player.CoordY + int(MaxViewDistance)
-
-	// Only check tiles within the square bounds
-	for x := minX; x <= maxX; x++ {
-		for y := minY; y <= maxY; y++ {
-			// Calculate actual distance
-			dx := float64(x - gc.player.CoordX)
-			dy := float64(y - gc.player.CoordY)
-			distance := math.Sqrt(dx*dx + dy*dy)
-
-			if distance <= MaxViewDistance {
-				// Try to get tile at this coordinate
-				if tile, exists := gc.server.tiles[fmt.Sprintf("%d,%d", x, y)]; exists {
-					nearbyTiles = append(nearbyTiles, tile)
-				}
-			}
-		}
-	}
-
 	// Collect nearby players
 	nearbyPlayers := make([]*models.Player, 0)
 	for conn := range gc.server.connections {
@@ -489,7 +576,6 @@ func (gc *GameConnection) sendSyncState() {
 	gc.SendMessage(Message{
 		Type: SyncStateMessage,
 		Data: map[string]any{
-			"tiles":             nearbyTiles,
 			"players":           nearbyPlayers,
 			"connected_clients": len(gc.server.connections),
 			"view_distance":     MaxViewDistance,
@@ -503,7 +589,7 @@ func StartServer() {
 
 	// Load map tiles from the database
 	var tiles []models.MapTile
-	if err := config.DB.Find(&tiles).Error; err != nil {
+	if err := config.DB.Preload("OwnerCountry").Preload("OccupiedByCountry").Find(&tiles).Error; err != nil {
 		log.Fatalf("Failed to load map tiles: %v", err)
 	}
 

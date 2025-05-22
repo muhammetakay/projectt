@@ -53,7 +53,7 @@ func (m *Player) GetLevel() int {
 }
 
 // ExpForLevel returns required EXP for a specific level
-func (m *Player) ExpForLevel(level int) int {
+func (m *Player) ExpForNextLevel(level int) int {
 	if level <= 1 {
 		return 0
 	}
@@ -63,4 +63,10 @@ func (m *Player) ExpForLevel(level int) int {
 
 	requiredExp := baseExp * math.Pow(growthFactor, float64(level-1))
 	return int(requiredExp)
+}
+
+func (m *Player) GetChunkCoord(chunkSize int) (int, int) {
+	chunkX := m.CoordX / chunkSize
+	chunkY := m.CoordY / chunkSize
+	return chunkX, chunkY
 }

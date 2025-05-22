@@ -14,6 +14,8 @@ const (
 	PingPongMessage
 	SyncStateMessage
 	UnitActionMessage
+	ChunkRequestMessage
+	ChunkDataMessage
 )
 
 type Message struct {

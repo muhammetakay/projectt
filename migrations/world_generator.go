@@ -229,8 +229,8 @@ func drawPolygon(polygon any, country models.Country, tileStore *map[string]mode
 		for _, point := range points {
 			if coords, ok := point.([]interface{}); ok {
 				if len(coords) == 2 {
-					lat := coords[0].(float64)
-					lon := coords[1].(float64)
+					lon := coords[0].(float64)
+					lat := coords[1].(float64)
 					tileCoord := latLongToTileCoords(lat, lon)
 					tileCoords = append(tileCoords, tileCoord)
 				}
@@ -374,17 +374,8 @@ func latLongToTileCoords(latitude, longitude float64) Vector2 {
 	pixelY := int(math.Round(((latitude + 90) / 180) * TilemapHeight))
 
 	// Sınırları kontrol et
-	if pixelX < 0 {
-		pixelX = 0
-	} else if pixelX >= TilemapWidth {
-		pixelX = TilemapWidth - 1
-	}
-
-	if pixelY < 0 {
-		pixelY = 0
-	} else if pixelY >= TilemapHeight {
-		pixelY = TilemapHeight - 1
-	}
+	pixelX = int(math.Max(0, math.Min(TilemapWidth-1, float64(pixelX))))
+	pixelY = int(math.Max(0, math.Min(TilemapHeight-1, float64(pixelY))))
 
 	return Vector2{X: pixelX, Y: pixelY}
 }
