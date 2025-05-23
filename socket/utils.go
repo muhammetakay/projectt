@@ -23,7 +23,6 @@ func getBinaryPlayer(m *models.Player) *binary.Player {
 func getBinaryCountry(m models.Country) binary.Country {
 	return binary.Country{
 		ID:             m.ID,
-		Name:           m.Name,
 		Code:           m.Code,
 		IsAIControlled: m.IsAIControlled,
 	}

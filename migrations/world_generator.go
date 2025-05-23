@@ -115,7 +115,6 @@ func (m *WorldGenerator) GenerateWorld(db *gorm.DB) {
 
 			// Extract country data
 			country := models.Country{
-				Name: countryName,
 				Code: countryCode,
 			}
 
@@ -132,13 +131,13 @@ func (m *WorldGenerator) GenerateWorld(db *gorm.DB) {
 					translations[lang][country.Code] = translation
 				} else {
 					// If not, use the English name as a fallback
-					translations[lang][country.Code] = country.Name
+					translations[lang][country.Code] = countryName
 				}
 			}
 
 			// Save to database
 			if err := tx.Create(&country).Error; err != nil {
-				fmt.Printf("Error creating country %s: %v\n", country.Name, err)
+				fmt.Printf("Error creating country %s: %v\n", countryName, err)
 			}
 
 			// geometry

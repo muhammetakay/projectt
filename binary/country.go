@@ -7,7 +7,6 @@ import (
 
 type Country struct {
 	ID             uint8
-	Name           string
 	Code           string
 	IsAIControlled bool
 }
@@ -16,11 +15,6 @@ func EncodeCountry(m *Country) []byte {
 	buf := new(bytes.Buffer)
 
 	buf.WriteByte(m.ID)
-
-	nameBytes := []byte(m.Name)
-	nameLen := len(nameBytes)
-	buf.WriteByte(uint8(nameLen))
-	binary.Write(buf, binary.LittleEndian, nameBytes)
 
 	codeBytes := []byte(m.Code)
 	codeLen := len(codeBytes)
