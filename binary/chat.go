@@ -23,7 +23,7 @@ func EncodeChatMessage(m *ChatMessage) ([]byte, error) {
 	buf := new(bytes.Buffer)
 
 	buf.WriteByte(uint8(m.Type))
-	binary.Write(buf, binary.BigEndian, m.From)
+	binary.Write(buf, binary.LittleEndian, m.From)
 
 	messageBytes := []byte(m.Message)
 	messageLen := len(messageBytes)
@@ -52,7 +52,7 @@ func DecodeChatMessage(data []byte) (*ChatMessage, error) {
 	m.Type = ChatMessageType(t)
 
 	// From (4 byte)
-	if err := binary.Read(buf, binary.BigEndian, &m.From); err != nil {
+	if err := binary.Read(buf, binary.LittleEndian, &m.From); err != nil {
 		return nil, err
 	}
 

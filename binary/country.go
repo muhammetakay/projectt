@@ -16,17 +16,16 @@ func EncodeCountry(m *Country) []byte {
 	buf := new(bytes.Buffer)
 
 	buf.WriteByte(m.ID)
-	binary.Write(buf, binary.BigEndian, m.ID)
 
 	nameBytes := []byte(m.Name)
 	nameLen := len(nameBytes)
 	buf.WriteByte(uint8(nameLen))
-	buf.Write(nameBytes)
+	binary.Write(buf, binary.LittleEndian, nameBytes)
 
 	codeBytes := []byte(m.Code)
 	codeLen := len(codeBytes)
 	buf.WriteByte(uint8(codeLen))
-	buf.Write(codeBytes)
+	binary.Write(buf, binary.LittleEndian, codeBytes)
 
 	isAiControlled := uint8(0)
 	if m.IsAIControlled {

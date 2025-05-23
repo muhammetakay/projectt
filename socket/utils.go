@@ -9,7 +9,7 @@ func getBinaryPlayer(m *models.Player) *binary.Player {
 	return &binary.Player{
 		ID:        uint32(m.ID),
 		Nickname:  m.Nickname,
-		CountryID: uint16(m.CountryID),
+		CountryID: uint8(m.CountryID),
 		EXP:       uint32(m.EXP),
 		Rank:      byte(m.Rank),
 		Health:    uint32(m.Health),

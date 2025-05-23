@@ -23,17 +23,19 @@ func EncodeSyncStateData(m *SyncStateData) ([]byte, error) {
 		}
 		playerBytes = append(playerBytes, playerByte...)
 	}
-	binary.Write(buf, binary.BigEndian, uint16(len(playerBytes)))
-	buf.Write(playerBytes)
+	buf.WriteByte(uint8(len(m.Players)))
+	binary.Write(buf, binary.LittleEndian, uint16(len(playerBytes)))
+	binary.Write(buf, binary.LittleEndian, playerBytes)
 
 	// Countries
 	countryBytes := make([]byte, 0)
 	for _, country := range m.Countries {
 		countryByte := EncodeCountry(&country)
-		countryBytes = append(playerBytes, countryByte...)
+		countryBytes = append(countryBytes, countryByte...)
 	}
-	binary.Write(buf, binary.BigEndian, uint16(len(countryBytes)))
-	buf.Write(countryBytes)
+	buf.WriteByte(uint8(len(m.Countries)))
+	binary.Write(buf, binary.LittleEndian, uint16(len(countryBytes)))
+	binary.Write(buf, binary.LittleEndian, countryBytes)
 
 	buf.WriteByte(uint8(m.OnlineCount))
 

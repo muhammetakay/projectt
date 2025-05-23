@@ -38,10 +38,8 @@ var packetTimeout = 2 * time.Second
 const (
 	NormalPacket = 0x01
 	ResendPacket = 0xFE
+	AckPacket    = 0xFD
 )
-
-// 0x01 => Normal istek
-// 0xFE => Resend isteği
 
 func HandleIncomingPacket(packet []byte, conn *net.UDPConn, addr *net.UDPAddr) (*Message, error) {
 	if len(packet) < 5 {
@@ -51,7 +49,7 @@ func HandleIncomingPacket(packet []byte, conn *net.UDPConn, addr *net.UDPAddr) (
 		return nil, fmt.Errorf("packet is not normal")
 	}
 
-	messageID := binary.BigEndian.Uint16(packet[1:3])
+	messageID := binary.LittleEndian.Uint16(packet[1:3])
 	index := packet[3]
 	total := packet[4]
 	payload := packet[5:]
@@ -146,7 +144,7 @@ func sendResendRequest(conn *net.UDPConn, addr *net.UDPAddr, messageID uint16, m
 
 	// Custom control type: 0xFF → özel kontrol mesajı
 	buf.WriteByte(ResendPacket)
-	binary.Write(buf, binary.BigEndian, messageID)
+	binary.Write(buf, binary.LittleEndian, messageID)
 
 	buf.WriteByte(byte(len(missingIndexes)))
 	buf.Write(missingIndexes)
@@ -154,12 +152,12 @@ func sendResendRequest(conn *net.UDPConn, addr *net.UDPAddr, messageID uint16, m
 	conn.WriteToUDP(buf.Bytes(), addr)
 }
 
-func HandleResendRequest(packet []byte, sentMessages map[uint16][][]byte, conn *net.UDPConn, addr *net.UDPAddr) {
+func HandleResendRequest(packet []byte, sentMessages map[uint16]*SentMessage, conn *net.UDPConn, addr *net.UDPAddr) {
 	if len(packet) < 4 || packet[0] != ResendPacket {
 		return // geçerli değil
 	}
 
-	messageID := binary.BigEndian.Uint16(packet[1:3])
+	messageID := binary.LittleEndian.Uint16(packet[1:3])
 	count := packet[3]
 
 	if int(4+count) > len(packet) {
@@ -168,22 +166,22 @@ func HandleResendRequest(packet []byte, sentMessages map[uint16][][]byte, conn *
 
 	missing := packet[4 : 4+count]
 
-	chunks, ok := sentMessages[messageID]
+	sentMessage, ok := sentMessages[messageID]
 	if !ok {
 		log.Printf("No saved message for resend: %d", messageID)
 		return
 	}
 
 	for _, index := range missing {
-		if int(index) >= len(chunks) {
+		if int(index) >= len(sentMessage.Chunks) {
 			continue
 		}
 		packet := new(bytes.Buffer)
 		packet.WriteByte(NormalPacket)
-		binary.Write(packet, binary.BigEndian, messageID)
+		binary.Write(packet, binary.LittleEndian, messageID)
 		packet.WriteByte(index)
-		packet.WriteByte(byte(len(chunks)))
-		packet.Write(chunks[index])
+		packet.WriteByte(byte(len(sentMessage.Chunks)))
+		packet.Write(sentMessage.Chunks[index])
 
 		conn.WriteToUDP(packet.Bytes(), addr)
 	}

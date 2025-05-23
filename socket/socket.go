@@ -3,7 +3,6 @@ package socket
 import (
 	"bytes"
 	"encoding/binary"
-	"encoding/json"
 	"fmt"
 	"log"
 	"math"
@@ -12,7 +11,6 @@ import (
 	b "projectt/binary"
 	"projectt/config"
 	"projectt/models"
-	"projectt/models/request"
 	"projectt/types"
 	"sync"
 	"time"
@@ -27,7 +25,10 @@ const (
 	MaxUDPPayload = 1200
 )
 
-var messageIDCounter uint16 = 0
+var (
+	messageIDCounter   uint16 = 0
+	messageIDCounterMu sync.RWMutex
+)
 
 var (
 	sentMessages     = make(map[uint16]*b.SentMessage)
@@ -35,6 +36,8 @@ var (
 )
 
 func nextMessageID() uint16 {
+	messageIDCounterMu.Lock()
+	defer messageIDCounterMu.Unlock()
 	messageIDCounter++
 	return messageIDCounter
 }
@@ -50,7 +53,7 @@ type GameConnection struct {
 
 type GameServer struct {
 	connections  map[*GameConnection]bool
-	countries    map[int]models.Country
+	countries    map[uint8]models.Country
 	tiles        map[string]models.MapTile
 	updatedTiles map[string]models.MapTile // Track tiles that need saving
 	mu           sync.RWMutex
@@ -59,7 +62,7 @@ type GameServer struct {
 func NewGameServer() *GameServer {
 	return &GameServer{
 		connections:  make(map[*GameConnection]bool),
-		countries:    make(map[int]models.Country),
+		countries:    make(map[uint8]models.Country),
 		tiles:        make(map[string]models.MapTile),
 		updatedTiles: make(map[string]models.MapTile),
 	}
@@ -117,22 +120,12 @@ func (s *GameServer) BroadcastInRange(msg Message, centerX, centerY uint16) {
 	}
 }
 
-func (gc *GameConnection) handleLogin(data any) {
-	// Convert data to LoginRequest
-	loginData, err := json.Marshal(data)
+func (gc *GameConnection) handleLogin(data []byte) {
+	loginRequest, err := b.DecodeLoginMessage(data)
 	if err != nil {
 		gc.SendMessage(Message{
 			Type:  LoginMessage,
-			Error: "error.invalid.request",
-		})
-		return
-	}
-
-	var loginRequest request.LoginRequest
-	if err := json.Unmarshal(loginData, &loginRequest); err != nil {
-		gc.SendMessage(Message{
-			Type:  LoginMessage,
-			Error: "error.invalid.request",
+			Error: "error.request.invalid",
 		})
 		return
 	}
@@ -141,7 +134,7 @@ func (gc *GameConnection) handleLogin(data any) {
 	if err := loginRequest.Validate(); err != nil {
 		gc.SendMessage(Message{
 			Type:  LoginMessage,
-			Error: "error.validation",
+			Error: err.Error(),
 		})
 		return
 	}
@@ -332,10 +325,11 @@ func (gc *GameConnection) handleChunkRequest(data any) {
 					Type:                uint8(tile.TileType),
 					PrefabID:            tile.PrefabID,
 					OccupiedByCountryID: tile.OccupiedByCountryID,
-					OccupiedAt:          tile.OccupiedAt,
 				})
 			} else {
-				chunkTiles = append(chunkTiles, b.ChunkTile{}) // empty tile
+				chunkTiles = append(chunkTiles, b.ChunkTile{
+					Type: uint8(types.TileTypeWater),
+				}) // empty tile
 			}
 		}
 	}
@@ -396,8 +390,8 @@ func (gc *GameConnection) SendMessage(msg Message) error {
 
 	messageID := nextMessageID()
 
-	// Her parçaya 4 byte başlık eklenecek: [messageID:2][index:1][count:1]
-	maxChunkSize := MaxUDPPayload - 4
+	// Her parçaya 5 byte başlık eklenecek: [packetType:1][messageID:2][index:1][count:1]
+	maxChunkSize := MaxUDPPayload - 5
 	totalChunks := byte((len(rawData) + maxChunkSize - 1) / maxChunkSize)
 
 	chunks := make([][]byte, 0)
@@ -415,7 +409,7 @@ func (gc *GameConnection) SendMessage(msg Message) error {
 		packet := new(bytes.Buffer)
 		// Header: packetType (1 byte), messageID (2 byte), chunkIndex (1 byte), totalChunks (1 byte)
 		packet.WriteByte(b.NormalPacket)
-		binary.Write(packet, binary.BigEndian, messageID)
+		binary.Write(packet, binary.LittleEndian, messageID)
 		packet.WriteByte(i)
 		packet.WriteByte(totalChunks)
 
@@ -557,6 +551,9 @@ func StartServer() {
 	if err := config.DB.Find(&countries).Error; err != nil {
 		log.Fatalf("Failed to load countries: %v", err)
 	}
+	for _, country := range countries {
+		server.countries[country.ID] = country
+	}
 
 	// Load map tiles from the database
 	var tiles []models.MapTile
@@ -607,9 +604,28 @@ func StartServer() {
 }
 
 func handleUDPMessage(server *GameServer, conn *net.UDPConn, addr *net.UDPAddr, data []byte) {
-	rawMessage, err := b.HandleIncomingPacket(data, conn, addr)
-	if err != nil {
-		log.Printf("Handle udp message error from %s, Error: %s\n", addr.String(), err)
+	if len(data) < 1 {
+		return
+	}
+
+	var rawMessage *b.Message
+	switch data[0] {
+	case b.NormalPacket:
+		msg, err := b.HandleIncomingPacket(data, conn, addr)
+		if err != nil {
+			log.Printf("Handle udp message error from %s, Error: %s\n", addr.String(), err)
+			return
+		}
+		rawMessage = msg
+	case b.ResendPacket:
+		sentMessagesLock.RLock()
+		b.HandleResendRequest(data, sentMessages, conn, addr)
+		sentMessagesLock.RUnlock()
+		return
+	case b.AckPacket:
+		// @todo
+		return
+	default:
 		return
 	}
 
