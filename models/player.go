@@ -9,17 +9,17 @@ import (
 type Player struct {
 	Model
 	Nickname  string           `json:"nickname" gorm:"unique;not null"`
-	UserID    int              `json:"user_id" gorm:"type:integer;null"` // Game user ID
-	CountryID int              `json:"country_id" gorm:"not null"`
+	UserID    uint             `json:"user_id" gorm:"type:integer;null"` // Game user ID
+	CountryID uint8            `json:"country_id" gorm:"not null"`
 	Country   *Country         `json:"country,omitempty" gorm:"foreignKey:CountryID;references:ID"`
-	EXP       int              `json:"exp" gorm:"default:0"`
-	Level     int              `json:"level" gorm:"-"`
+	EXP       uint             `json:"exp" gorm:"default:0"`
+	Level     uint             `json:"level" gorm:"-"`
 	Rank      types.PlayerRank `json:"rank" gorm:"type:integer;default:1"`
-	Health    int              `json:"health" gorm:"default:100"`
-	MaxHealth int              `json:"max_health" gorm:"default:100"`
-	CoordX    int              `json:"coord_x" gorm:"default:0"`
-	CoordY    int              `json:"coord_y" gorm:"default:0"`
-	UnitID    *int             `json:"unit_id" gorm:"type:tinyint;null"` // ID of the unit the player is controlling
+	Health    uint             `json:"health" gorm:"default:100"`
+	MaxHealth uint             `json:"max_health" gorm:"default:100"`
+	CoordX    uint16           `json:"coord_x" gorm:"default:0"`
+	CoordY    uint16           `json:"coord_y" gorm:"default:0"`
+	UnitID    *uint16          `json:"unit_id" gorm:"type:tinyint;null"` // ID of the unit the player is controlling
 	Unit      *Unit            `json:"unit,omitempty" gorm:"foreignKey:UnitID;references:ID"`
 }
 
@@ -30,7 +30,7 @@ func (m Player) MarshalJSON() ([]byte, error) {
 }
 
 // Level calculates player level based on EXP with logarithmic progression
-func (m *Player) GetLevel() int {
+func (m *Player) GetLevel() uint {
 	if m.EXP == 0 {
 		return 1
 	}
@@ -42,7 +42,7 @@ func (m *Player) GetLevel() int {
 
 	// Calculate level using logarithmic formula
 	// level = log(EXP/baseExp) / log(growthFactor) + 1
-	level := int(math.Log(float64(m.EXP)/baseExp)/math.Log(growthFactor)) + 1
+	level := uint(math.Log(float64(m.EXP)/baseExp)/math.Log(growthFactor)) + 1
 
 	// Ensure minimum level is 1
 	if level < 1 {
@@ -65,8 +65,8 @@ func (m *Player) ExpForNextLevel(level int) int {
 	return int(requiredExp)
 }
 
-func (m *Player) GetChunkCoord(chunkSize int) (int, int) {
-	chunkX := m.CoordX / chunkSize
-	chunkY := m.CoordY / chunkSize
+func (m *Player) GetChunkCoord(chunkSize int) (uint16, uint16) {
+	chunkX := m.CoordX / uint16(chunkSize)
+	chunkY := m.CoordY / uint16(chunkSize)
 	return chunkX, chunkY
 }

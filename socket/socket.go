@@ -1,19 +1,19 @@
 package socket
 
 import (
+	"bytes"
+	"encoding/binary"
 	"encoding/json"
-	"errors"
 	"fmt"
-	"io"
 	"log"
 	"math"
 	"net"
 	"os"
+	b "projectt/binary"
 	"projectt/config"
 	"projectt/models"
 	"projectt/models/request"
 	"projectt/types"
-	"strings"
 	"sync"
 	"time"
 )
@@ -23,16 +23,34 @@ const (
 	ChunkSize            = 16
 	MaxViewChunkDistance = 3
 	MaxViewDistance      = ChunkSize * MaxViewChunkDistance
+
+	MaxUDPPayload = 1200
 )
 
+var messageIDCounter uint16 = 0
+
+var (
+	sentMessages     = make(map[uint16]*b.SentMessage)
+	sentMessagesLock sync.RWMutex
+)
+
+func nextMessageID() uint16 {
+	messageIDCounter++
+	return messageIDCounter
+}
+
 type GameConnection struct {
-	conn   net.Conn
-	player *models.Player
-	server *GameServer
+	udpAddr *net.UDPAddr // UDP client address
+	udpConn *net.UDPConn // UDP connection (shared)
+	player  *models.Player
+	server  *GameServer
+
+	lastHeartbeat time.Time
 }
 
 type GameServer struct {
 	connections  map[*GameConnection]bool
+	countries    map[int]models.Country
 	tiles        map[string]models.MapTile
 	updatedTiles map[string]models.MapTile // Track tiles that need saving
 	mu           sync.RWMutex
@@ -41,44 +59,18 @@ type GameServer struct {
 func NewGameServer() *GameServer {
 	return &GameServer{
 		connections:  make(map[*GameConnection]bool),
+		countries:    make(map[int]models.Country),
 		tiles:        make(map[string]models.MapTile),
 		updatedTiles: make(map[string]models.MapTile),
 	}
 }
 
-func NewGameConnection(conn net.Conn, server *GameServer) *GameConnection {
+func NewGameConnection(addr *net.UDPAddr, conn *net.UDPConn, server *GameServer) *GameConnection {
 	return &GameConnection{
-		conn:   conn,
-		server: server,
+		udpAddr: addr,
+		udpConn: conn,
+		server:  server,
 	}
-}
-
-func (s *GameServer) addConnection(gc *GameConnection) bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if len(s.connections) >= MaxConnections {
-		gc.SendMessage(Message{
-			Type:  SystemMessage,
-			Error: "error.server.full",
-		})
-		gc.conn.Close()
-		return false
-	}
-	s.connections[gc] = true
-	return true
-}
-
-func (s *GameServer) removeConnection(gc *GameConnection) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if gc.player != nil {
-		if err := config.DB.Save(gc.player).Error; err != nil {
-			log.Printf("Error saving player %s: %v\n", gc.player.Nickname, err)
-		} else {
-			log.Printf("Player %s saved successfully\n", gc.player.Nickname)
-		}
-	}
-	delete(s.connections, gc)
 }
 
 // Broadcast sends a message to all connected clients
@@ -87,29 +79,24 @@ func (s *GameServer) Broadcast(msg Message) {
 	defer s.mu.RUnlock()
 
 	for conn := range s.connections {
-		// Skip disconnected clients
-		if conn.conn == nil {
-			continue
-		}
-
 		// Send message asynchronously to prevent blocking
 		go func(c *GameConnection) {
 			if err := c.SendMessage(msg); err != nil {
-				fmt.Printf("Error broadcasting to %s: %v\n",
-					c.conn.RemoteAddr().String(), err)
+				log.Printf("Error broadcasting to %s: %v\n",
+					c.udpAddr.String(), err)
 			}
 		}(conn)
 	}
 }
 
 // BroadcastInRange sends a message to all clients within MaxViewDistance
-func (s *GameServer) BroadcastInRange(msg Message, centerX, centerY int) {
+func (s *GameServer) BroadcastInRange(msg Message, centerX, centerY uint16) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
 	for conn := range s.connections {
-		// Skip disconnected clients or clients without players
-		if conn.conn == nil || conn.player == nil {
+		// Skip clients without players
+		if conn.player == nil {
 			continue
 		}
 
@@ -122,58 +109,10 @@ func (s *GameServer) BroadcastInRange(msg Message, centerX, centerY int) {
 		if distance <= MaxViewDistance {
 			go func(c *GameConnection) {
 				if err := c.SendMessage(msg); err != nil {
-					fmt.Printf("Error broadcasting to %s: %v\n",
-						c.conn.RemoteAddr().String(), err)
+					log.Printf("Error broadcasting to %s: %v\n",
+						c.udpAddr.String(), err)
 				}
 			}(conn)
-		}
-	}
-}
-
-func (gc *GameConnection) HandleConnection() {
-	defer gc.conn.Close()
-	defer gc.server.removeConnection(gc)
-
-	// Add connection to server's connection pool
-	if ok := gc.server.addConnection(gc); !ok {
-		return
-	}
-
-	remoteAddr := gc.conn.RemoteAddr().String()
-	fmt.Printf("New connection from %s\n", remoteAddr)
-
-	// Send welcome message
-	gc.SendMessage(Message{
-		Type: UnauthorizedMessage,
-	})
-
-	// Main message loop
-	for {
-		msg, err := gc.ReadMessage()
-		if err != nil {
-			if gc.player != nil {
-				fmt.Printf("Player %s disconnected (%s)\n", gc.player.Nickname, remoteAddr)
-			} else {
-				fmt.Printf("Client disconnected: %s\n", remoteAddr)
-			}
-			return
-		}
-
-		// Handle message based on type
-		switch msg.Type {
-		case LoginMessage:
-			gc.handleLogin(msg.Data)
-		case ChatMessage:
-			gc.handleChat(msg.Data)
-		case PlayerMovementMessage:
-			gc.handleMovement(msg.Data)
-		case ChunkRequestMessage:
-			gc.handleChunkRequest(msg.Data)
-		default:
-			gc.SendMessage(Message{
-				Type: UnknownMessage,
-				Data: msg,
-			})
 		}
 	}
 }
@@ -203,9 +142,6 @@ func (gc *GameConnection) handleLogin(data any) {
 		gc.SendMessage(Message{
 			Type:  LoginMessage,
 			Error: "error.validation",
-			Data: map[string]any{
-				"error": err.Error(),
-			},
 		})
 		return
 	}
@@ -232,44 +168,26 @@ func (gc *GameConnection) handleLogin(data any) {
 		return
 	}
 
+	player, err := b.EncodePlayer(getBinaryPlayer(gc.player))
+	if err != nil {
+		gc.SendMessage(Message{
+			Type:  LoginMessage,
+			Error: "error.login.unavailable",
+		})
+		return
+	}
+
 	// Send success message
 	gc.SendMessage(Message{
 		Type: LoginMessage,
-		Data: map[string]any{
-			"message": "success.login",
-			"player":  gc.player,
-		},
+		Data: player,
 	})
 
-	// Send initial sync state
-	// gc.sendSyncState()
-
-	// Send initial chunk data
-	// gc.sendInitialChunks()
+	// send initial data
+	gc.sendSyncState()
 }
 
-func (gc *GameConnection) sendInitialChunks() {
-	// Calculate player's current chunk
-	playerChunkX, playerChunkY := gc.player.GetChunkCoord(ChunkSize)
-
-	// Create chunk requests for current and surrounding chunks
-	chunks := make([]request.Chunk, 0)
-
-	// Add player's current chunk and surrounding chunks
-	for dx := -MaxViewChunkDistance; dx <= MaxViewChunkDistance; dx++ {
-		for dy := -MaxViewChunkDistance; dy <= MaxViewChunkDistance; dy++ {
-			chunks = append(chunks, request.Chunk{
-				ChunkX: playerChunkX + dx,
-				ChunkY: playerChunkY + dy,
-			})
-		}
-	}
-
-	// Use existing chunk request handler
-	gc.handleChunkRequest(chunks)
-}
-
-func (gc *GameConnection) handleChat(data any) {
+func (gc *GameConnection) handleChat(data []byte) {
 	if gc.player == nil {
 		gc.SendMessage(Message{
 			Type:  ChatMessage,
@@ -278,46 +196,34 @@ func (gc *GameConnection) handleChat(data any) {
 		return
 	}
 
-	message, ok := data.(map[string]any)["message"].(string)
-	if !ok {
+	_, err := b.DecodeChatMessage(data)
+	if err != nil {
+		gc.SendMessage(Message{
+			Type:  ChatMessage,
+			Error: "error.chat.invalid",
+		})
 		return
 	}
 
 	// Broadcast chat message to all clients
 	gc.server.Broadcast(Message{
 		Type: ChatMessage,
-		Data: map[string]any{
-			"from":    gc.player.Nickname,
-			"message": message,
-		},
+		Data: data,
 	})
 }
 
 func (gc *GameConnection) handleMovement(data any) {
 	if gc.player == nil {
 		gc.SendMessage(Message{
-			Type:  PlayerMovementMessage,
+			Type:  UnauthorizedMessage,
 			Error: "error.login.required",
 		})
 		return
 	}
 
-	// Convert data to MovementRequest
-	movementData, err := json.Marshal(data)
+	// Convert data to PlayerMovementRequest
+	moveReq, err := b.DecodePlayerMovementRequest(data.([]byte))
 	if err != nil {
-		gc.SendMessage(Message{
-			Type:  PlayerMovementMessage,
-			Error: "error.invalid.request",
-		})
-		return
-	}
-
-	var moveReq request.MovementRequest
-	if err := json.Unmarshal(movementData, &moveReq); err != nil {
-		gc.SendMessage(Message{
-			Type:  PlayerMovementMessage,
-			Error: "error.invalid.request",
-		})
 		return
 	}
 
@@ -330,11 +236,11 @@ func (gc *GameConnection) handleMovement(data any) {
 	if distance > 1.5 {
 		gc.SendMessage(Message{
 			Type: PlayerMovementMessage,
-			Data: map[string]any{
-				"player":  gc.player,
-				"coord_x": gc.player.CoordX,
-				"coord_y": gc.player.CoordY,
-			},
+			Data: b.EncodePlayerMovementData(&b.PlayerMovementData{
+				PlayerID: uint32(gc.player.ID),
+				CoordX:   gc.player.CoordX,
+				CoordY:   gc.player.CoordY,
+			}),
 		})
 		return
 	}
@@ -350,11 +256,11 @@ func (gc *GameConnection) handleMovement(data any) {
 	if !found || targetTile.TileType != types.TileTypeGround {
 		gc.SendMessage(Message{
 			Type: PlayerMovementMessage,
-			Data: map[string]any{
-				"player":  gc.player,
-				"coord_x": gc.player.CoordX,
-				"coord_y": gc.player.CoordY,
-			},
+			Data: b.EncodePlayerMovementData(&b.PlayerMovementData{
+				PlayerID: uint32(gc.player.ID),
+				CoordX:   gc.player.CoordX,
+				CoordY:   gc.player.CoordY,
+			}),
 		})
 		return
 	}
@@ -366,11 +272,11 @@ func (gc *GameConnection) handleMovement(data any) {
 	// Notify nearby clients about the movement
 	gc.server.BroadcastInRange(Message{
 		Type: PlayerMovementMessage,
-		Data: map[string]any{
-			"player":  gc.player,
-			"coord_x": gc.player.CoordX,
-			"coord_y": gc.player.CoordY,
-		},
+		Data: b.EncodePlayerMovementData(&b.PlayerMovementData{
+			PlayerID: uint32(gc.player.ID),
+			CoordX:   gc.player.CoordX,
+			CoordY:   gc.player.CoordY,
+		}),
 	}, gc.player.CoordX, gc.player.CoordY)
 }
 
@@ -383,8 +289,8 @@ func (gc *GameConnection) handleChunkRequest(data any) {
 		return
 	}
 
-	// Convert data to []ChunkRequest
-	chunkData, err := json.Marshal(data)
+	// Convert data to ChunkRequest
+	chunk, err := b.DecodeChunkRequest(data.([]byte))
 	if err != nil {
 		gc.SendMessage(Message{
 			Type:  ChunkRequestMessage,
@@ -393,94 +299,142 @@ func (gc *GameConnection) handleChunkRequest(data any) {
 		return
 	}
 
-	var chunkReqest request.ChunkRequest
-	if err := json.Unmarshal(chunkData, &chunkReqest); err != nil {
-		gc.SendMessage(Message{
-			Type:  ChunkRequestMessage,
-			Error: "error.invalid.request",
-		})
-		return
-	}
-	chunks := chunkReqest.Chunks
-
 	// Calculate player's current chunk
 	playerChunkX, playerChunkY := gc.player.GetChunkCoord(ChunkSize)
-
-	// Process each requested chunk
-	responseChunks := make(map[string][]models.MapTile)
 
 	gc.server.mu.RLock()
 	defer gc.server.mu.RUnlock()
 
-	for _, chunk := range chunks {
-		// Check if requested chunk is within MaxViewChunkDistance
-		chunkDx := chunk.ChunkX - playerChunkX
-		chunkDy := chunk.ChunkY - playerChunkY
-		chunkDistance := math.Sqrt(float64(chunkDx*chunkDx + chunkDy*chunkDy))
+	// Check if requested chunk is within MaxViewChunkDistance
+	chunkDx := chunk.ChunkX - playerChunkX
+	chunkDy := chunk.ChunkY - playerChunkY
+	chunkDistance := math.Sqrt(float64(chunkDx*chunkDx + chunkDy*chunkDy))
 
-		if chunkDistance > MaxViewChunkDistance {
-			continue // Skip chunks that are too far away
-		}
+	if chunkDistance > MaxViewChunkDistance {
+		return
+	}
 
-		// Calculate chunk boundaries
-		startX := chunk.ChunkX * ChunkSize
-		startY := chunk.ChunkY * ChunkSize
-		endX := startX + ChunkSize
-		endY := startY + ChunkSize
+	// Calculate chunk boundaries
+	startX := chunk.ChunkX * ChunkSize
+	startY := chunk.ChunkY * ChunkSize
+	endX := startX + ChunkSize
+	endY := startY + ChunkSize
 
-		chunkTiles := make([]models.MapTile, 0)
+	chunkTiles := make([]b.ChunkTile, 0)
 
-		// Collect tiles in this chunk
-		for x := startX; x < endX; x++ {
-			for y := startY; y < endY; y++ {
-				if tile, exists := gc.server.tiles[fmt.Sprintf("%d,%d", x, y)]; exists {
-					chunkTiles = append(chunkTiles, tile)
-				}
+	// Collect tiles in this chunk
+	for x := startX; x < endX; x++ {
+		for y := startY; y < endY; y++ {
+			if tile, exists := gc.server.tiles[fmt.Sprintf("%d,%d", x, y)]; exists {
+				chunkTiles = append(chunkTiles, b.ChunkTile{
+					CountryID:           uint8(tile.OwnerCountryID),
+					IsBorder:            tile.IsBorder,
+					Type:                uint8(tile.TileType),
+					PrefabID:            tile.PrefabID,
+					OccupiedByCountryID: tile.OccupiedByCountryID,
+					OccupiedAt:          tile.OccupiedAt,
+				})
+			} else {
+				chunkTiles = append(chunkTiles, b.ChunkTile{}) // empty tile
 			}
 		}
+	}
 
-		// Add to response if chunk has tiles
-		chunkKey := fmt.Sprintf("%d,%d", chunk.ChunkX, chunk.ChunkY)
-		responseChunks[chunkKey] = chunkTiles
+	chunkPacket, err := b.EncodeChunkPacket(b.ChunkPacket{
+		ChunkX: chunk.ChunkX,
+		ChunkY: chunk.ChunkY,
+		Tiles:  [256]b.ChunkTile(chunkTiles),
+	})
+	if err != nil {
+		log.Printf("error sending chunks: %s\n", err)
+		return
 	}
 
 	// Send chunk data
 	gc.SendMessage(Message{
 		Type: ChunkDataMessage,
-		Data: map[string]any{
-			"chunks": responseChunks,
-		},
+		Data: chunkPacket,
 	})
 }
 
-func (gc *GameConnection) ReadMessage() (Message, error) {
-	var msg Message
-	decoder := json.NewDecoder(gc.conn)
-	err := decoder.Decode(&msg)
-
-	if err != nil {
-		// Check if connection is closed or broken
-		if err == io.EOF || errors.Is(err, net.ErrClosed) ||
-			strings.Contains(err.Error(), "connection reset by peer") ||
-			strings.Contains(err.Error(), "broken pipe") {
-			return Message{}, err
+// mutex lock required before call
+func (gc *GameConnection) handleDisconnect() {
+	log.Printf("Disconnected: %s\n", gc.udpAddr.String())
+	// If player is not nil, save it
+	if gc.player != nil {
+		if err := config.DB.Save(gc.player).Error; err != nil {
+			log.Printf("Error saving player %s: %v\n", gc.player.Nickname, err)
+		} else {
+			log.Printf("Player %s saved successfully\n", gc.player.Nickname)
 		}
-
-		// Handle JSON decode errors
-		return Message{
-			Type:  UnknownMessage,
-			Error: "error.invalid.json",
-			Data: map[string]any{
-				"error": err.Error(),
-			},
-		}, nil
 	}
-
-	return msg, nil
+	// Delete connection
+	delete(gc.server.connections, gc)
 }
 
+// func (gc *GameConnection) SendMessage(msg Message) error {
+// 	data, err := json.Marshal(msg)
+// 	if err != nil {
+// 		return err
+// 	}
+
+// 	if _, err := gc.udpConn.WriteToUDP(data, gc.udpAddr); err != nil {
+// 		log.Printf("Error sending UDP response: %v", err)
+// 	}
+// 	return err
+// }
+
 func (gc *GameConnection) SendMessage(msg Message) error {
-	return json.NewEncoder(gc.conn).Encode(msg)
+	rawData, err := b.EncodeRawMessage(b.Message{
+		Type:  b.MessageType(msg.Type),
+		Data:  msg.Data,
+		Error: msg.Error,
+	})
+	if err != nil {
+		return err
+	}
+
+	messageID := nextMessageID()
+
+	// Her parçaya 4 byte başlık eklenecek: [messageID:2][index:1][count:1]
+	maxChunkSize := MaxUDPPayload - 4
+	totalChunks := byte((len(rawData) + maxChunkSize - 1) / maxChunkSize)
+
+	chunks := make([][]byte, 0)
+
+	for i := byte(0); i < totalChunks; i++ {
+		start := int(i) * maxChunkSize
+		end := start + maxChunkSize
+		if end > len(rawData) {
+			end = len(rawData)
+		}
+
+		chunk := rawData[start:end]
+		chunks = append(chunks, chunk)
+
+		packet := new(bytes.Buffer)
+		// Header: packetType (1 byte), messageID (2 byte), chunkIndex (1 byte), totalChunks (1 byte)
+		packet.WriteByte(b.NormalPacket)
+		binary.Write(packet, binary.BigEndian, messageID)
+		packet.WriteByte(i)
+		packet.WriteByte(totalChunks)
+
+		packet.Write(chunk)
+
+		if _, err := gc.udpConn.WriteToUDP(packet.Bytes(), gc.udpAddr); err != nil {
+			log.Printf("Error sending UDP packet (chunk %d/%d): %v", i+1, totalChunks, err)
+			return err
+		}
+	}
+
+	sentMessagesLock.Lock()
+	sentMessages[messageID] = &b.SentMessage{
+		Chunks: chunks,
+		SentAt: time.Now(),
+	}
+	sentMessagesLock.Unlock()
+
+	return nil
 }
 
 func (s *GameServer) autoSaveRoutine() {
@@ -547,7 +501,7 @@ func (gc *GameConnection) sendSyncState() {
 	defer gc.server.mu.RUnlock()
 
 	// Collect nearby players
-	nearbyPlayers := make([]*models.Player, 0)
+	nearbyPlayers := make([]*b.Player, 0)
 	for conn := range gc.server.connections {
 		if conn.player == nil || conn.player.ID == gc.player.ID {
 			continue
@@ -558,28 +512,39 @@ func (gc *GameConnection) sendSyncState() {
 		distance := math.Sqrt(dx*dx + dy*dy)
 
 		if distance <= MaxViewDistance {
-			nearbyPlayers = append(nearbyPlayers, conn.player)
+			nearbyPlayers = append(nearbyPlayers, getBinaryPlayer(conn.player))
 		}
+	}
+
+	// Binary countries
+	binaryCountries := make([]b.Country, 0)
+	for _, country := range gc.server.countries {
+		binaryCountries = append(binaryCountries, getBinaryCountry(country))
 	}
 
 	// Send player movement message to nearby players for let them know
 	gc.server.BroadcastInRange(Message{
 		Type: PlayerMovementMessage,
-		Data: map[string]any{
-			"player":  gc.player,
-			"coord_x": gc.player.CoordX,
-			"coord_y": gc.player.CoordY,
-		},
+		Data: b.EncodePlayerMovementData(&b.PlayerMovementData{
+			PlayerID: uint32(gc.player.ID),
+			CoordX:   gc.player.CoordX,
+			CoordY:   gc.player.CoordY,
+		}),
 	}, gc.player.CoordX, gc.player.CoordY)
+
+	data, err := b.EncodeSyncStateData(&b.SyncStateData{
+		Players:     nearbyPlayers,
+		Countries:   binaryCountries,
+		OnlineCount: len(gc.server.connections),
+	})
+	if err != nil {
+		return
+	}
 
 	// Send sync state message
 	gc.SendMessage(Message{
 		Type: SyncStateMessage,
-		Data: map[string]any{
-			"players":           nearbyPlayers,
-			"connected_clients": len(gc.server.connections),
-			"view_distance":     MaxViewDistance,
-		},
+		Data: data,
 	})
 }
 
@@ -587,9 +552,15 @@ func StartServer() {
 	port := os.Getenv("APP_PORT")
 	server := NewGameServer()
 
+	// Load countries from the database
+	var countries []models.Country
+	if err := config.DB.Find(&countries).Error; err != nil {
+		log.Fatalf("Failed to load countries: %v", err)
+	}
+
 	// Load map tiles from the database
 	var tiles []models.MapTile
-	if err := config.DB.Preload("OwnerCountry").Preload("OccupiedByCountry").Find(&tiles).Error; err != nil {
+	if err := config.DB.Find(&tiles).Error; err != nil {
 		log.Fatalf("Failed to load map tiles: %v", err)
 	}
 
@@ -599,25 +570,146 @@ func StartServer() {
 		server.tiles[key] = tile
 	}
 
-	listener, err := net.Listen("tcp", ":"+port)
+	// UDP setup
+	addr, err := net.ResolveUDPAddr("udp", ":"+port)
+	if err != nil {
+		log.Fatalf("Failed to resolve address: %v", err)
+	}
+
+	conn, err := net.ListenUDP("udp", addr)
 	if err != nil {
 		log.Fatalf("Server could not be started: %v", err)
 	}
-	defer listener.Close()
+	defer conn.Close()
 
-	fmt.Printf("Socket server is running on port %s...\n", port)
+	fmt.Printf("UDP server is running on port %s...\n", port)
 
 	// Start auto-save routine
 	go server.autoSaveRoutine()
+	// Start cleanup routine
+	go server.cleanupInactiveConnections()
+	// Start checking for missing packets
+	go checkAndRequestMissingPackets()
+	// Start cleanup old sent messages
+	go cleanupOldSentMessages()
 
+	buffer := make([]byte, 4096)
 	for {
-		conn, err := listener.Accept()
+		n, remoteAddr, err := conn.ReadFromUDP(buffer)
 		if err != nil {
-			log.Printf("Connection could not be accepted: %v", err)
+			log.Printf("Error reading from UDP: %v", err)
 			continue
 		}
 
-		gc := NewGameConnection(conn, server)
-		go gc.HandleConnection()
+		// Handle message
+		go handleUDPMessage(server, conn, remoteAddr, buffer[:n])
+	}
+}
+
+func handleUDPMessage(server *GameServer, conn *net.UDPConn, addr *net.UDPAddr, data []byte) {
+	rawMessage, err := b.HandleIncomingPacket(data, conn, addr)
+	if err != nil {
+		log.Printf("Handle udp message error from %s, Error: %s\n", addr.String(), err)
+		return
+	}
+
+	msg := Message{
+		Type: MessageType(rawMessage.Type),
+		Data: rawMessage.Data,
+	}
+
+	// Find or create game connection for this address
+	gc := findOrCreateConnection(server, conn, addr)
+
+	// Update last heartbeat time
+	gc.lastHeartbeat = time.Now()
+
+	// Handle message based on type
+	switch msg.Type {
+	case LoginMessage:
+		gc.handleLogin(msg.Data)
+	case ChatMessage:
+		gc.handleChat(msg.Data)
+	case PlayerMovementMessage:
+		gc.handleMovement(msg.Data)
+	case ChunkRequestMessage:
+		gc.handleChunkRequest(msg.Data)
+	case DisconnectMessage:
+		server.mu.Lock()
+		gc.handleDisconnect()
+		server.mu.Unlock()
+	default:
+		// unknown message
+	}
+}
+
+func findOrCreateConnection(server *GameServer, conn *net.UDPConn, addr *net.UDPAddr) *GameConnection {
+	server.mu.Lock()
+	defer server.mu.Unlock()
+
+	// Look for existing connection with this address
+	for gc := range server.connections {
+		if gc.udpAddr.String() == addr.String() {
+			return gc
+		}
+	}
+
+	// Create new connection if not found
+	gc := NewGameConnection(addr, conn, server)
+	fmt.Printf("New connection from %s\n", addr.String())
+	server.connections[gc] = true
+
+	// Make sure we don't exceed max connections
+	if len(server.connections) >= MaxConnections {
+		gc.SendMessage(Message{
+			Type:  SystemMessage,
+			Error: "error.server.full",
+		})
+		gc.handleDisconnect()
+		return nil
+	}
+
+	return gc
+}
+
+func (s *GameServer) cleanupInactiveConnections() {
+	ticker := time.NewTicker(30 * time.Second)
+	defer ticker.Stop()
+
+	for range ticker.C {
+		s.mu.Lock()
+		now := time.Now()
+		for gc := range s.connections {
+			if now.Sub(gc.lastHeartbeat) > 1*time.Minute {
+				gc.handleDisconnect()
+			}
+		}
+		s.mu.Unlock()
+	}
+}
+
+func checkAndRequestMissingPackets() {
+	ticker := time.NewTicker(500 * time.Millisecond)
+	defer ticker.Stop()
+
+	for range ticker.C {
+		b.CheckAndRequestMissingPackets()
+	}
+}
+
+func cleanupOldSentMessages() {
+	ticker := time.NewTicker(10 * time.Second)
+	defer ticker.Stop()
+
+	for range ticker.C {
+		cutoff := time.Now().Add(-10 * time.Second)
+
+		sentMessagesLock.Lock()
+		for id, msg := range sentMessages {
+			if msg.SentAt.Before(cutoff) {
+				delete(sentMessages, id)
+			}
+		}
+		sentMessagesLock.Unlock()
 	}
 }

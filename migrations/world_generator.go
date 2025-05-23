@@ -188,8 +188,8 @@ func (m *WorldGenerator) GenerateWorld(db *gorm.DB) {
 
 			// Check all four directions
 			for _, dir := range directions {
-				neighborX := tile.CoordX + dir[0]
-				neighborY := tile.CoordY + dir[1]
+				neighborX := int(tile.CoordX) + dir[0]
+				neighborY := int(tile.CoordY) + dir[1]
 				neighborKey := fmt.Sprintf("%d:%d", neighborX, neighborY)
 
 				if neighborIdx, exists := coordToIndex[neighborKey]; exists {
@@ -278,8 +278,8 @@ func drawLine(start, end Vector2, country models.Country, tileStore *map[string]
 		coordKey := fmt.Sprintf("%d:%d", x0, y0)
 
 		(*tileStore)[coordKey] = models.MapTile{
-			CoordX:         x0,
-			CoordY:         y0,
+			CoordX:         uint16(x0),
+			CoordY:         uint16(y0),
 			OwnerCountryID: country.ID,
 			TileType:       types.TileTypeGround,
 		}
@@ -353,8 +353,8 @@ func fillPolygon(vertices []Vector2, country models.Country, tileStore *map[stri
 				coordKey := fmt.Sprintf("%d:%d", x, y)
 
 				(*tileStore)[coordKey] = models.MapTile{
-					CoordX:         x,
-					CoordY:         y,
+					CoordX:         uint16(x),
+					CoordY:         uint16(y),
 					OwnerCountryID: country.ID,
 					TileType:       types.TileTypeGround,
 				}

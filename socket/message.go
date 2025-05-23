@@ -1,6 +1,6 @@
 package socket
 
-type MessageType int
+type MessageType uint8
 
 const (
 	LoginMessage MessageType = iota
@@ -16,10 +16,11 @@ const (
 	UnitActionMessage
 	ChunkRequestMessage
 	ChunkDataMessage
+	DisconnectMessage
 )
 
 type Message struct {
 	Type  MessageType `json:"type"`
-	Data  any         `json:"data"`
+	Data  []byte      `json:"data"`
 	Error string      `json:"error"`
 }
