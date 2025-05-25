@@ -1,4 +1,4 @@
-package socket
+package types
 
 type MessageType uint8
 
@@ -18,9 +18,3 @@ const (
 	ChunkDataMessage
 	DisconnectMessage
 )
-
-type Message struct {
-	Type  MessageType `json:"type"`
-	Data  []byte      `json:"data"`
-	Error string      `json:"error"`
-}

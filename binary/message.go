@@ -4,12 +4,23 @@ import (
 	"bytes"
 	"encoding/binary"
 	"io"
+	"projectt/types"
 )
 
-type MessageType uint8
+var AckRequiredMessageTypes = []types.MessageType{
+	types.LoginMessage,
+	types.ChatMessage,
+	types.SystemMessage,
+	types.UnauthorizedMessage,
+	types.PlayerJoinedMessage,
+	types.PlayerLeftMessage,
+	types.SyncStateMessage,
+	types.ChunkRequestMessage,
+	types.ChunkDataMessage,
+}
 
 type Message struct {
-	Type  MessageType
+	Type  types.MessageType
 	Data  []byte
 	Error string
 }
@@ -47,7 +58,7 @@ func EncodeRawMessage(msg Message) ([]byte, error) {
 func DecodeRawMessage(data []byte) (*Message, error) {
 	buf := bytes.NewReader(data)
 
-	var msgType MessageType
+	var msgType types.MessageType
 	if err := binary.Read(buf, binary.LittleEndian, &msgType); err != nil {
 		return nil, err
 	}

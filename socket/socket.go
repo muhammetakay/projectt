@@ -12,6 +12,7 @@ import (
 	"projectt/config"
 	"projectt/models"
 	"projectt/types"
+	"slices"
 	"sync"
 	"time"
 )
@@ -26,16 +27,16 @@ const (
 )
 
 var (
-	messageIDCounter   uint16 = 0
+	messageIDCounter   uint32 = 0
 	messageIDCounterMu sync.RWMutex
 )
 
 var (
-	sentMessages     = make(map[uint16]*b.SentMessage)
+	sentMessages     = make(map[uint32]*b.SentMessage)
 	sentMessagesLock sync.RWMutex
 )
 
-func nextMessageID() uint16 {
+func nextMessageID() uint32 {
 	messageIDCounterMu.Lock()
 	defer messageIDCounterMu.Unlock()
 	messageIDCounter++
@@ -77,7 +78,7 @@ func NewGameConnection(addr *net.UDPAddr, conn *net.UDPConn, server *GameServer)
 }
 
 // Broadcast sends a message to all connected clients
-func (s *GameServer) Broadcast(msg Message) {
+func (s *GameServer) Broadcast(msg b.Message) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -93,7 +94,7 @@ func (s *GameServer) Broadcast(msg Message) {
 }
 
 // BroadcastInRange sends a message to all clients within MaxViewDistance
-func (s *GameServer) BroadcastInRange(msg Message, centerX, centerY uint16) {
+func (s *GameServer) BroadcastInRange(msg b.Message, centerX, centerY uint16) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -123,8 +124,8 @@ func (s *GameServer) BroadcastInRange(msg Message, centerX, centerY uint16) {
 func (gc *GameConnection) handleLogin(data []byte) {
 	loginRequest, err := b.DecodeLoginMessage(data)
 	if err != nil {
-		gc.SendMessage(Message{
-			Type:  LoginMessage,
+		gc.SendMessage(b.Message{
+			Type:  types.LoginMessage,
 			Error: "error.request.invalid",
 		})
 		return
@@ -132,8 +133,8 @@ func (gc *GameConnection) handleLogin(data []byte) {
 
 	// Validate request
 	if err := loginRequest.Validate(); err != nil {
-		gc.SendMessage(Message{
-			Type:  LoginMessage,
+		gc.SendMessage(b.Message{
+			Type:  types.LoginMessage,
 			Error: err.Error(),
 		})
 		return
@@ -145,8 +146,8 @@ func (gc *GameConnection) handleLogin(data []byte) {
 
 	for conn := range gc.server.connections {
 		if conn.player != nil && conn.player.Nickname == loginRequest.Nickname {
-			gc.SendMessage(Message{
-				Type:  LoginMessage,
+			gc.SendMessage(b.Message{
+				Type:  types.LoginMessage,
 				Error: "error.player.already_connected",
 			})
 			return
@@ -154,8 +155,8 @@ func (gc *GameConnection) handleLogin(data []byte) {
 	}
 
 	if err := config.DB.Where("nickname ILIKE ?", loginRequest.Nickname).First(&gc.player).Error; err != nil {
-		gc.SendMessage(Message{
-			Type:  LoginMessage,
+		gc.SendMessage(b.Message{
+			Type:  types.LoginMessage,
 			Error: "error.player.not_found",
 		})
 		return
@@ -163,16 +164,16 @@ func (gc *GameConnection) handleLogin(data []byte) {
 
 	player, err := b.EncodePlayer(getBinaryPlayer(gc.player))
 	if err != nil {
-		gc.SendMessage(Message{
-			Type:  LoginMessage,
+		gc.SendMessage(b.Message{
+			Type:  types.LoginMessage,
 			Error: "error.login.unavailable",
 		})
 		return
 	}
 
 	// Send success message
-	gc.SendMessage(Message{
-		Type: LoginMessage,
+	gc.SendMessage(b.Message{
+		Type: types.LoginMessage,
 		Data: player,
 	})
 
@@ -182,8 +183,8 @@ func (gc *GameConnection) handleLogin(data []byte) {
 
 func (gc *GameConnection) handleChat(data []byte) {
 	if gc.player == nil {
-		gc.SendMessage(Message{
-			Type:  ChatMessage,
+		gc.SendMessage(b.Message{
+			Type:  types.ChatMessage,
 			Error: "error.login.required",
 		})
 		return
@@ -191,24 +192,24 @@ func (gc *GameConnection) handleChat(data []byte) {
 
 	_, err := b.DecodeChatMessage(data)
 	if err != nil {
-		gc.SendMessage(Message{
-			Type:  ChatMessage,
+		gc.SendMessage(b.Message{
+			Type:  types.ChatMessage,
 			Error: "error.chat.invalid",
 		})
 		return
 	}
 
 	// Broadcast chat message to all clients
-	gc.server.Broadcast(Message{
-		Type: ChatMessage,
+	gc.server.Broadcast(b.Message{
+		Type: types.ChatMessage,
 		Data: data,
 	})
 }
 
 func (gc *GameConnection) handleMovement(data any) {
 	if gc.player == nil {
-		gc.SendMessage(Message{
-			Type:  UnauthorizedMessage,
+		gc.SendMessage(b.Message{
+			Type:  types.UnauthorizedMessage,
 			Error: "error.login.required",
 		})
 		return
@@ -227,8 +228,8 @@ func (gc *GameConnection) handleMovement(data any) {
 
 	// Check if movement is within allowed range (e.g., 1 tile)
 	if distance > 1.5 {
-		gc.SendMessage(Message{
-			Type: PlayerMovementMessage,
+		gc.SendMessage(b.Message{
+			Type: types.PlayerMovementMessage,
 			Data: b.EncodePlayerMovementData(&b.PlayerMovementData{
 				PlayerID: uint32(gc.player.ID),
 				CoordX:   gc.player.CoordX,
@@ -247,8 +248,8 @@ func (gc *GameConnection) handleMovement(data any) {
 
 	// Check if target tile exists and is walkable
 	if !found || targetTile.TileType != types.TileTypeGround {
-		gc.SendMessage(Message{
-			Type: PlayerMovementMessage,
+		gc.SendMessage(b.Message{
+			Type: types.PlayerMovementMessage,
 			Data: b.EncodePlayerMovementData(&b.PlayerMovementData{
 				PlayerID: uint32(gc.player.ID),
 				CoordX:   gc.player.CoordX,
@@ -263,8 +264,8 @@ func (gc *GameConnection) handleMovement(data any) {
 	gc.player.CoordY = moveReq.TargetY
 
 	// Notify nearby clients about the movement
-	gc.server.BroadcastInRange(Message{
-		Type: PlayerMovementMessage,
+	gc.server.BroadcastInRange(b.Message{
+		Type: types.PlayerMovementMessage,
 		Data: b.EncodePlayerMovementData(&b.PlayerMovementData{
 			PlayerID: uint32(gc.player.ID),
 			CoordX:   gc.player.CoordX,
@@ -275,8 +276,8 @@ func (gc *GameConnection) handleMovement(data any) {
 
 func (gc *GameConnection) handleChunkRequest(data any) {
 	if gc.player == nil {
-		gc.SendMessage(Message{
-			Type:  ChunkRequestMessage,
+		gc.SendMessage(b.Message{
+			Type:  types.ChunkRequestMessage,
 			Error: "error.login.required",
 		})
 		return
@@ -285,8 +286,8 @@ func (gc *GameConnection) handleChunkRequest(data any) {
 	// Convert data to ChunkRequest
 	chunk, err := b.DecodeChunkRequest(data.([]byte))
 	if err != nil {
-		gc.SendMessage(Message{
-			Type:  ChunkRequestMessage,
+		gc.SendMessage(b.Message{
+			Type:  types.ChunkRequestMessage,
 			Error: "error.invalid.request",
 		})
 		return
@@ -345,8 +346,8 @@ func (gc *GameConnection) handleChunkRequest(data any) {
 	}
 
 	// Send chunk data
-	gc.SendMessage(Message{
-		Type: ChunkDataMessage,
+	gc.SendMessage(b.Message{
+		Type: types.ChunkDataMessage,
 		Data: chunkPacket,
 	})
 }
@@ -366,16 +367,12 @@ func (gc *GameConnection) handleDisconnect() {
 	delete(gc.server.connections, gc)
 }
 
-func (gc *GameConnection) handlePingPong(msg Message) {
+func (gc *GameConnection) handlePingPong(msg b.Message) {
 	gc.SendMessage(msg)
 }
 
-func (gc *GameConnection) SendMessage(msg Message) error {
-	rawData, err := b.EncodeRawMessage(b.Message{
-		Type:  b.MessageType(msg.Type),
-		Data:  msg.Data,
-		Error: msg.Error,
-	})
+func (gc *GameConnection) SendMessage(msg b.Message) error {
+	rawData, err := b.EncodeRawMessage(msg)
 	if err != nil {
 		return err
 	}
@@ -415,8 +412,10 @@ func (gc *GameConnection) SendMessage(msg Message) error {
 
 	sentMessagesLock.Lock()
 	sentMessages[messageID] = &b.SentMessage{
-		Chunks: chunks,
-		SentAt: time.Now(),
+		Chunks:         chunks,
+		SentAt:         time.Now(),
+		GameConnection: gc,
+		AckRequired:    slices.Contains(b.AckRequiredMessageTypes, msg.Type),
 	}
 	sentMessagesLock.Unlock()
 
@@ -509,8 +508,8 @@ func (gc *GameConnection) sendSyncState() {
 	}
 
 	// Send player movement message to nearby players for let them know
-	gc.server.BroadcastInRange(Message{
-		Type: PlayerMovementMessage,
+	gc.server.BroadcastInRange(b.Message{
+		Type: types.PlayerMovementMessage,
 		Data: b.EncodePlayerMovementData(&b.PlayerMovementData{
 			PlayerID: uint32(gc.player.ID),
 			CoordX:   gc.player.CoordX,
@@ -528,8 +527,8 @@ func (gc *GameConnection) sendSyncState() {
 	}
 
 	// Send sync state message
-	gc.SendMessage(Message{
-		Type: SyncStateMessage,
+	gc.SendMessage(b.Message{
+		Type: types.SyncStateMessage,
 		Data: data,
 	})
 }
@@ -581,6 +580,8 @@ func StartServer() {
 	go checkAndRequestMissingPackets()
 	// Start cleanup old sent messages
 	go cleanupOldSentMessages()
+	// Start ack routine
+	go CheckAckRequiredMessages()
 
 	buffer := make([]byte, 4096)
 	for {
@@ -600,30 +601,27 @@ func handleUDPMessage(server *GameServer, conn *net.UDPConn, addr *net.UDPAddr, 
 		return
 	}
 
-	var rawMessage *b.Message
+	var msg *b.Message
 	switch data[0] {
 	case b.NormalPacket:
-		msg, err := b.HandleIncomingPacket(data, conn, addr)
+		m, err := b.HandleIncomingPacket(data, conn, addr)
 		if err != nil {
 			log.Printf("Handle udp message error from %s, Error: %s\n", addr.String(), err)
 			return
 		}
-		rawMessage = msg
+		msg = m
 	case b.ResendPacket:
 		sentMessagesLock.RLock()
 		b.HandleResendRequest(data, sentMessages, conn, addr)
 		sentMessagesLock.RUnlock()
 		return
 	case b.AckPacket:
-		// @todo
+		sentMessagesLock.Lock()
+		b.HandleAckRequest(data, sentMessages)
+		sentMessagesLock.Unlock()
 		return
 	default:
 		return
-	}
-
-	msg := Message{
-		Type: MessageType(rawMessage.Type),
-		Data: rawMessage.Data,
 	}
 
 	// Find or create game connection for this address
@@ -634,20 +632,20 @@ func handleUDPMessage(server *GameServer, conn *net.UDPConn, addr *net.UDPAddr, 
 
 	// Handle message based on type
 	switch msg.Type {
-	case LoginMessage:
+	case types.LoginMessage:
 		gc.handleLogin(msg.Data)
-	case ChatMessage:
+	case types.ChatMessage:
 		gc.handleChat(msg.Data)
-	case PlayerMovementMessage:
+	case types.PlayerMovementMessage:
 		gc.handleMovement(msg.Data)
-	case ChunkRequestMessage:
+	case types.ChunkRequestMessage:
 		gc.handleChunkRequest(msg.Data)
-	case DisconnectMessage:
+	case types.DisconnectMessage:
 		server.mu.Lock()
 		defer server.mu.Unlock()
 		gc.handleDisconnect()
-	case PingPongMessage:
-		gc.handlePingPong(msg)
+	case types.PingPongMessage:
+		gc.handlePingPong(*msg)
 	default:
 		// unknown message
 	}
@@ -671,8 +669,8 @@ func findOrCreateConnection(server *GameServer, conn *net.UDPConn, addr *net.UDP
 
 	// Make sure we don't exceed max connections
 	if len(server.connections) >= MaxConnections {
-		gc.SendMessage(Message{
-			Type:  SystemMessage,
+		gc.SendMessage(b.Message{
+			Type:  types.SystemMessage,
 			Error: "error.server.full",
 		})
 		gc.handleDisconnect()
@@ -716,10 +714,38 @@ func cleanupOldSentMessages() {
 
 		sentMessagesLock.Lock()
 		for id, msg := range sentMessages {
+			if msg.AckRequired {
+				continue
+			}
 			if msg.SentAt.Before(cutoff) {
 				delete(sentMessages, id)
 			}
 		}
 		sentMessagesLock.Unlock()
+	}
+}
+
+func CheckAckRequiredMessages() {
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
+
+	for range ticker.C {
+		sentMessagesLock.RLock()
+		// check and resend ack required sent messages
+		for _, msg := range sentMessages {
+			if !msg.AckRequired {
+				continue
+			}
+
+			gc, ok := msg.GameConnection.(*GameConnection)
+			if !ok {
+				continue
+			}
+
+			for _, chunk := range msg.Chunks {
+				gc.udpConn.WriteToUDP(chunk, gc.udpAddr)
+			}
+		}
+		sentMessagesLock.RUnlock()
 	}
 }

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"slices"
 	"sync"
 	"time"
 )
@@ -26,10 +27,14 @@ type ReceivedMessage struct {
 type SentMessage struct {
 	Chunks [][]byte
 	SentAt time.Time
+
+	GameConnection any
+
+	AckRequired bool
 }
 
 var (
-	packetBuffer     = make(map[uint16]*ReceivedMessage)
+	packetBuffer     = make(map[uint32]*ReceivedMessage)
 	packetBufferLock sync.RWMutex
 )
 
@@ -49,10 +54,10 @@ func HandleIncomingPacket(packet []byte, conn *net.UDPConn, addr *net.UDPAddr) (
 		return nil, fmt.Errorf("packet is not normal")
 	}
 
-	messageID := binary.LittleEndian.Uint16(packet[1:3])
-	index := packet[3]
-	total := packet[4]
-	payload := packet[5:]
+	messageID := binary.LittleEndian.Uint32(packet[1:5])
+	index := packet[5]
+	total := packet[6]
+	payload := packet[7:]
 
 	packetBufferLock.Lock()
 	defer packetBufferLock.Unlock()
@@ -84,9 +89,16 @@ func HandleIncomingPacket(packet []byte, conn *net.UDPConn, addr *net.UDPAddr) (
 
 	// Tüm parçalar alındı → birleştir
 	fullData := bytes.Join(msgBuf.Chunks, nil)
-	delete(packetBuffer, messageID)
 
-	return DecodeRawMessage(fullData)
+	msg, err := DecodeRawMessage(fullData)
+	if err == nil {
+		if slices.Contains(AckRequiredMessageTypes, msg.Type) {
+			sendAckRequest(msgBuf.Conn, msgBuf.Addr, messageID)
+		}
+	}
+
+	delete(packetBuffer, messageID)
+	return msg, err
 }
 
 const (
@@ -100,6 +112,7 @@ func CheckAndRequestMissingPackets() {
 
 	now := time.Now()
 
+	// check missing packets for received messages
 	for messageID, msg := range packetBuffer {
 		if msg.Received >= msg.TotalChunks {
 			continue
@@ -139,7 +152,7 @@ func CheckAndRequestMissingPackets() {
 	}
 }
 
-func sendResendRequest(conn *net.UDPConn, addr *net.UDPAddr, messageID uint16, missingIndexes []byte) {
+func sendResendRequest(conn *net.UDPConn, addr *net.UDPAddr, messageID uint32, missingIndexes []byte) {
 	buf := new(bytes.Buffer)
 
 	// Custom control type: 0xFF → özel kontrol mesajı
@@ -152,13 +165,13 @@ func sendResendRequest(conn *net.UDPConn, addr *net.UDPAddr, messageID uint16, m
 	conn.WriteToUDP(buf.Bytes(), addr)
 }
 
-func HandleResendRequest(packet []byte, sentMessages map[uint16]*SentMessage, conn *net.UDPConn, addr *net.UDPAddr) {
+func HandleResendRequest(packet []byte, sentMessages map[uint32]*SentMessage, conn *net.UDPConn, addr *net.UDPAddr) {
 	if len(packet) < 4 || packet[0] != ResendPacket {
 		return // geçerli değil
 	}
 
-	messageID := binary.LittleEndian.Uint16(packet[1:3])
-	count := packet[3]
+	messageID := binary.LittleEndian.Uint32(packet[1:5])
+	count := packet[5]
 
 	if int(4+count) > len(packet) {
 		return
@@ -185,4 +198,28 @@ func HandleResendRequest(packet []byte, sentMessages map[uint16]*SentMessage, co
 
 		conn.WriteToUDP(packet.Bytes(), addr)
 	}
+}
+
+func HandleAckRequest(packet []byte, sentMessages map[uint32]*SentMessage) {
+	if len(packet) < 4 || packet[0] != AckPacket {
+		return // geçerli değil
+	}
+
+	messageID := binary.LittleEndian.Uint32(packet[1:5])
+
+	_, ok := sentMessages[messageID]
+	if !ok {
+		return
+	}
+
+	delete(sentMessages, messageID)
+}
+
+func sendAckRequest(conn *net.UDPConn, addr *net.UDPAddr, messageID uint32) {
+	buf := new(bytes.Buffer)
+
+	buf.WriteByte(AckPacket)
+	binary.Write(buf, binary.LittleEndian, messageID)
+
+	conn.WriteToUDP(buf.Bytes(), addr)
 }
