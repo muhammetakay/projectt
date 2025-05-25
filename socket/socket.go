@@ -644,8 +644,8 @@ func handleUDPMessage(server *GameServer, conn *net.UDPConn, addr *net.UDPAddr, 
 		gc.handleChunkRequest(msg.Data)
 	case DisconnectMessage:
 		server.mu.Lock()
+		defer server.mu.Unlock()
 		gc.handleDisconnect()
-		server.mu.Unlock()
 	case PingPongMessage:
 		gc.handlePingPong(msg)
 	default:
