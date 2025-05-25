@@ -23,7 +23,7 @@ func Seed(db *gorm.DB) {
 	db.First(&tile, "owner_country_id = ?", country.ID)
 
 	// player
-	testPlayers := []string{"Ryuzaki", "Ahmet", "Mustafa"}
+	testPlayers := []string{"Ryuzaki", "Muhammet", "Ahmet", "Mustafa"}
 	for _, player := range testPlayers {
 		testPlayer := models.Player{Nickname: player, CountryID: country.ID, CoordX: tile.CoordX, CoordY: tile.CoordY}
 		db.FirstOrCreate(&testPlayer, models.Player{Nickname: testPlayer.Nickname})

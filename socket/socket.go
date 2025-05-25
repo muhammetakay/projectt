@@ -366,17 +366,9 @@ func (gc *GameConnection) handleDisconnect() {
 	delete(gc.server.connections, gc)
 }
 
-// func (gc *GameConnection) SendMessage(msg Message) error {
-// 	data, err := json.Marshal(msg)
-// 	if err != nil {
-// 		return err
-// 	}
-
-// 	if _, err := gc.udpConn.WriteToUDP(data, gc.udpAddr); err != nil {
-// 		log.Printf("Error sending UDP response: %v", err)
-// 	}
-// 	return err
-// }
+func (gc *GameConnection) handlePingPong(msg Message) {
+	gc.SendMessage(msg)
+}
 
 func (gc *GameConnection) SendMessage(msg Message) error {
 	rawData, err := b.EncodeRawMessage(b.Message{
@@ -654,6 +646,8 @@ func handleUDPMessage(server *GameServer, conn *net.UDPConn, addr *net.UDPAddr, 
 		server.mu.Lock()
 		gc.handleDisconnect()
 		server.mu.Unlock()
+	case PingPongMessage:
+		gc.handlePingPong(msg)
 	default:
 		// unknown message
 	}
