@@ -162,7 +162,8 @@ func (gc *GameConnection) handleLogin(data []byte) {
 		return
 	}
 
-	player, err := b.EncodePlayer(getBinaryPlayer(gc.player))
+	binaryPlayer := getBinaryPlayer(gc.player)
+	player, err := b.EncodePlayer(binaryPlayer)
 	if err != nil {
 		gc.SendMessage(b.Message{
 			Type:  types.LoginMessage,
@@ -176,6 +177,12 @@ func (gc *GameConnection) handleLogin(data []byte) {
 		Type: types.LoginMessage,
 		Data: player,
 	})
+
+	// send player joined message to nearby players
+	gc.server.BroadcastInRange(b.Message{
+		Type: types.PlayerJoinedMessage,
+		Data: player,
+	}, gc.player.CoordX, gc.player.CoordY)
 
 	// send initial data
 	gc.sendSyncState()
@@ -363,6 +370,15 @@ func (gc *GameConnection) handleDisconnect() {
 			log.Printf("Player %s saved successfully\n", gc.player.Nickname)
 		}
 	}
+	// send player left message to nearby players
+	if gc.player != nil {
+		data := make([]byte, 4)
+		binary.LittleEndian.PutUint32(data, uint32(gc.player.ID))
+		gc.server.BroadcastInRange(b.Message{
+			Type: types.PlayerLeftMessage,
+			Data: data,
+		}, gc.player.CoordX, gc.player.CoordY)
+	}
 	// Delete connection
 	delete(gc.server.connections, gc)
 }
@@ -506,16 +522,6 @@ func (gc *GameConnection) sendSyncState() {
 	for _, country := range gc.server.countries {
 		binaryCountries = append(binaryCountries, getBinaryCountry(country))
 	}
-
-	// Send player movement message to nearby players for let them know
-	gc.server.BroadcastInRange(b.Message{
-		Type: types.PlayerMovementMessage,
-		Data: b.EncodePlayerMovementData(&b.PlayerMovementData{
-			PlayerID: uint32(gc.player.ID),
-			CoordX:   gc.player.CoordX,
-			CoordY:   gc.player.CoordY,
-		}),
-	}, gc.player.CoordX, gc.player.CoordY)
 
 	data, err := b.EncodeSyncStateData(&b.SyncStateData{
 		Players:     nearbyPlayers,
