@@ -24,6 +24,10 @@ type PlayerMovementRequest struct {
 	TargetY uint16
 }
 
+type PlayerDataRequest struct {
+	PlayerID uint32
+}
+
 type PlayerMovementData struct {
 	PlayerID uint32
 	CoordX   uint16
@@ -86,6 +90,22 @@ func DecodePlayerMovementRequest(data []byte) (*PlayerMovementRequest, error) {
 
 	// TargetY (2 byte)
 	if err := binary.Read(buf, binary.LittleEndian, &m.TargetY); err != nil {
+		return nil, err
+	}
+
+	return m, nil
+}
+
+func DecodePlayerDataRequest(data []byte) (*PlayerDataRequest, error) {
+	if len(data) < 4 { // minimum 2 + 2 byte
+		return nil, fmt.Errorf("data too short")
+	}
+
+	buf := bytes.NewReader(data)
+	m := &PlayerDataRequest{}
+
+	// PlayerID (4 byte)
+	if err := binary.Read(buf, binary.LittleEndian, &m.PlayerID); err != nil {
 		return nil, err
 	}
 

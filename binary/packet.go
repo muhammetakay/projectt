@@ -30,7 +30,7 @@ type SentMessage struct {
 
 	GameConnection any
 
-	AckRequired bool
+	Ack chan bool
 }
 
 var (
@@ -201,18 +201,21 @@ func HandleResendRequest(packet []byte, sentMessages map[uint32]*SentMessage, co
 }
 
 func HandleAckRequest(packet []byte, sentMessages map[uint32]*SentMessage) {
-	if len(packet) < 4 || packet[0] != AckPacket {
+	if len(packet) < 5 || packet[0] != AckPacket {
 		return // geçerli değil
 	}
 
 	messageID := binary.LittleEndian.Uint32(packet[1:5])
 
-	_, ok := sentMessages[messageID]
+	msg, ok := sentMessages[messageID]
 	if !ok {
 		return
 	}
 
-	delete(sentMessages, messageID)
+	select {
+	case msg.Ack <- true:
+	default:
+	}
 }
 
 func sendAckRequest(conn *net.UDPConn, addr *net.UDPAddr, messageID uint32) {

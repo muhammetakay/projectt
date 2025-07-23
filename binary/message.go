@@ -16,7 +16,6 @@ var AckRequiredMessageTypes = []types.MessageType{
 	types.PlayerLeftMessage,
 	types.SyncStateMessage,
 	types.ChunkRequestMessage,
-	types.ChunkDataMessage,
 }
 
 type Message struct {

@@ -11,6 +11,7 @@ const (
 	PlayerMovementMessage
 	PlayerJoinedMessage
 	PlayerLeftMessage
+	PlayerDataMessage
 	PingPongMessage
 	SyncStateMessage
 	UnitActionMessage
