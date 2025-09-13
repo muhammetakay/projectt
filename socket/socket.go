@@ -80,14 +80,24 @@ func NewGameConnection(addr *net.UDPAddr, conn *net.UDPConn, server *GameServer)
 
 // Broadcast sends a message to all connected clients
 func (s *GameServer) Broadcast(msg b.Message) {
+	s.mu.RLock()
+	connectionsCopy := make([]*GameConnection, 0, len(s.connections))
 	for conn := range s.connections {
+		connectionsCopy = append(connectionsCopy, conn)
+	}
+	s.mu.RUnlock()
+
+	s.broadcastInternal(msg, connectionsCopy)
+}
+
+// broadcastInternal performs the actual broadcast without acquiring server locks
+func (s *GameServer) broadcastInternal(msg b.Message, connections []*GameConnection) {
+	for _, conn := range connections {
 		// Send message asynchronously to prevent blocking
 		go func(c *GameConnection) {
 			if c == nil {
 				return
 			}
-			c.mu.RLock()
-			defer c.mu.RUnlock()
 			if err := c.SendMessage(msg); err != nil {
 				log.Printf("Error broadcasting to %s: %v\n",
 					c.udpAddr.String(), err)
@@ -103,33 +113,47 @@ func (s *GameServer) BroadcastWithLock(msg b.Message) {
 
 // BroadcastInRange sends a message to all clients within MaxViewDistance
 func (s *GameServer) BroadcastInRange(msg b.Message, centerX, centerY uint16) {
+	s.mu.RLock()
+	connectionsCopy := make([]*GameConnection, 0, len(s.connections))
 	for conn := range s.connections {
-		conn.mu.RLock()
-		defer conn.mu.RUnlock()
-		// Skip clients without players
-		if conn.player == nil {
-			continue
-		}
+		connectionsCopy = append(connectionsCopy, conn)
+	}
+	s.mu.RUnlock()
 
-		// Calculate distance between players
-		dx := float64(conn.player.CoordX - centerX)
-		dy := float64(conn.player.CoordY - centerY)
-		distance := math.Sqrt(dx*dx + dy*dy)
+	s.broadcastInRangeInternal(msg, centerX, centerY, connectionsCopy)
+}
 
-		// Send only if within view distance
-		if distance <= MaxViewDistance {
-			go func(c *GameConnection) {
-				if c == nil {
-					return
-				}
-				c.mu.RLock()
-				defer c.mu.RUnlock()
+// broadcastInRangeInternal performs the actual broadcast without acquiring server locks
+// This is useful when the caller already holds the server lock
+func (s *GameServer) broadcastInRangeInternal(msg b.Message, centerX, centerY uint16, connections []*GameConnection) {
+	for _, conn := range connections {
+		go func(c *GameConnection) {
+			if c == nil {
+				return
+			}
+
+			c.mu.RLock()
+			// Skip clients without players
+			if c.player == nil {
+				c.mu.RUnlock()
+				return
+			}
+
+			// Calculate distance between players
+			dx := float64(c.player.CoordX - centerX)
+			dy := float64(c.player.CoordY - centerY)
+			distance := math.Sqrt(dx*dx + dy*dy)
+			playerWithinRange := distance <= MaxViewDistance
+			c.mu.RUnlock()
+
+			// Send only if within view distance
+			if playerWithinRange {
 				if err := c.SendMessage(msg); err != nil {
 					log.Printf("Error broadcasting to %s: %v\n",
 						c.udpAddr.String(), err)
 				}
-			}(conn)
-		}
+			}
+		}(conn)
 	}
 }
 func (s *GameServer) BroadcastInRangeWithLock(msg b.Message, centerX, centerY uint16) {
@@ -159,23 +183,28 @@ func (gc *GameConnection) handleLogin(data []byte) {
 
 	// check if player with nickname already connected
 	gc.server.mu.RLock()
-	defer gc.server.mu.RUnlock()
-
+	connectedNicknames := make(map[string]bool)
 	for conn := range gc.server.connections {
 		conn.mu.RLock()
-		if conn.player != nil && conn.player.Nickname == loginRequest.Nickname {
-			gc.SendMessage(b.Message{
-				Type:  types.LoginMessage,
-				Error: "error.player.already_connected",
-			})
-			return
+		if conn.player != nil {
+			connectedNicknames[conn.player.Nickname] = true
 		}
 		conn.mu.RUnlock()
+	}
+	gc.server.mu.RUnlock()
+
+	if connectedNicknames[loginRequest.Nickname] {
+		gc.SendMessage(b.Message{
+			Type:  types.LoginMessage,
+			Error: "error.player.already_connected",
+		})
+		return
 	}
 
 	gc.mu.Lock()
 	if err := config.DB.Where("nickname ILIKE ?", loginRequest.Nickname).First(&gc.player).Error; err != nil {
 		gc.player = nil // reset player if not found
+		gc.mu.Unlock()
 		gc.SendMessage(b.Message{
 			Type:  types.LoginMessage,
 			Error: "error.player.not_found",
@@ -239,8 +268,8 @@ func (gc *GameConnection) handleChat(data []byte) {
 
 func (gc *GameConnection) handleMovement(data any) {
 	gc.mu.Lock()
-	defer gc.mu.Unlock()
 	if gc.player == nil {
+		gc.mu.Unlock()
 		gc.SendMessage(b.Message{
 			Type:  types.UnauthorizedMessage,
 			Error: "error.login.required",
@@ -251,6 +280,7 @@ func (gc *GameConnection) handleMovement(data any) {
 	// Convert data to PlayerMovementRequest
 	moveReq, err := b.DecodePlayerMovementRequest(data.([]byte))
 	if err != nil {
+		gc.mu.Unlock()
 		return
 	}
 
@@ -261,62 +291,75 @@ func (gc *GameConnection) handleMovement(data any) {
 
 	// Check if movement is within allowed range (e.g., 1 tile)
 	if distance > 1.5 {
+		playerMovementData := b.EncodePlayerMovementData(&b.PlayerMovementData{
+			PlayerID: uint32(gc.player.ID),
+			CoordX:   gc.player.CoordX,
+			CoordY:   gc.player.CoordY,
+		})
+		gc.mu.Unlock()
 		gc.SendMessage(b.Message{
 			Type: types.PlayerMovementMessage,
-			Data: b.EncodePlayerMovementData(&b.PlayerMovementData{
-				PlayerID: uint32(gc.player.ID),
-				CoordX:   gc.player.CoordX,
-				CoordY:   gc.player.CoordY,
-			}),
+			Data: playerMovementData,
 		})
 		return
 	}
 
 	// Find target tile
 	targetTileKey := fmt.Sprintf("%d,%d", moveReq.TargetX, moveReq.TargetY)
+	gc.mu.Unlock()
 
 	gc.server.mu.RLock()
-	defer gc.server.mu.RUnlock()
 	targetTile, found := gc.server.tiles[targetTileKey]
+	gc.server.mu.RUnlock()
 
 	// Check if target tile exists and is walkable
 	if !found || targetTile.TileType != types.TileTypeGround {
+		gc.mu.RLock()
+		playerMovementData := b.EncodePlayerMovementData(&b.PlayerMovementData{
+			PlayerID: uint32(gc.player.ID),
+			CoordX:   gc.player.CoordX,
+			CoordY:   gc.player.CoordY,
+		})
+		gc.mu.RUnlock()
 		gc.SendMessage(b.Message{
 			Type: types.PlayerMovementMessage,
-			Data: b.EncodePlayerMovementData(&b.PlayerMovementData{
-				PlayerID: uint32(gc.player.ID),
-				CoordX:   gc.player.CoordX,
-				CoordY:   gc.player.CoordY,
-			}),
+			Data: playerMovementData,
 		})
 		return
 	}
 
 	// Update player position
+	gc.mu.Lock()
 	gc.player.CoordX = moveReq.TargetX
 	gc.player.CoordY = moveReq.TargetY
+	playerMovementData := b.EncodePlayerMovementData(&b.PlayerMovementData{
+		PlayerID: uint32(gc.player.ID),
+		CoordX:   gc.player.CoordX,
+		CoordY:   gc.player.CoordY,
+	})
+	coordX := gc.player.CoordX
+	coordY := gc.player.CoordY
+	gc.mu.Unlock()
 
 	// Notify nearby clients about the movement
 	gc.server.BroadcastInRange(b.Message{
 		Type: types.PlayerMovementMessage,
-		Data: b.EncodePlayerMovementData(&b.PlayerMovementData{
-			PlayerID: uint32(gc.player.ID),
-			CoordX:   gc.player.CoordX,
-			CoordY:   gc.player.CoordY,
-		}),
-	}, gc.player.CoordX, gc.player.CoordY)
+		Data: playerMovementData,
+	}, coordX, coordY)
 }
 
 func (gc *GameConnection) handlePlayerData(data any) {
 	gc.mu.RLock()
-	defer gc.mu.RUnlock()
 	if gc.player == nil {
+		gc.mu.RUnlock()
 		gc.SendMessage(b.Message{
 			Type:  types.UnauthorizedMessage,
 			Error: "error.login.required",
 		})
 		return
 	}
+	playerCoords := [2]uint16{gc.player.CoordX, gc.player.CoordY}
+	gc.mu.RUnlock()
 
 	// Convert data to PlayerDataRequest
 	req, err := b.DecodePlayerDataRequest(data.([]byte))
@@ -325,18 +368,39 @@ func (gc *GameConnection) handlePlayerData(data any) {
 	}
 
 	gc.server.mu.RLock()
-	defer gc.server.mu.RUnlock()
+	connectionsCopy := make([]*GameConnection, 0, len(gc.server.connections))
+	for conn := range gc.server.connections {
+		connectionsCopy = append(connectionsCopy, conn)
+	}
+	gc.server.mu.RUnlock()
 
 	// Check if player exists
 	var player *models.Player
-	for conn := range gc.server.connections {
+	for _, conn := range connectionsCopy {
 		if conn == nil {
 			continue
 		}
 		conn.mu.RLock()
-		defer conn.mu.RUnlock()
 		if conn.player != nil && conn.player.ID == uint(req.PlayerID) {
-			player = conn.player
+			// Create a copy of the player data to avoid holding the lock
+			player = &models.Player{
+				Model: models.Model{
+					ID: conn.player.ID,
+				},
+				CoordX:    conn.player.CoordX,
+				CoordY:    conn.player.CoordY,
+				Nickname:  conn.player.Nickname,
+				CountryID: conn.player.CountryID,
+				EXP:       conn.player.EXP,
+				Rank:      conn.player.Rank,
+				Health:    conn.player.Health,
+				MaxHealth: conn.player.MaxHealth,
+				UnitID:    conn.player.UnitID,
+			}
+		}
+		conn.mu.RUnlock()
+		if player != nil {
+			break
 		}
 	}
 
@@ -345,8 +409,8 @@ func (gc *GameConnection) handlePlayerData(data any) {
 	}
 
 	// Calculate distance
-	dx := player.CoordX - gc.player.CoordX
-	dy := player.CoordY - gc.player.CoordY
+	dx := player.CoordX - playerCoords[0]
+	dy := player.CoordY - playerCoords[1]
 	distance := math.Sqrt(float64(dx*dx + dy*dy))
 
 	// Check if player is within MaxViewDistance
@@ -367,14 +431,18 @@ func (gc *GameConnection) handlePlayerData(data any) {
 
 func (gc *GameConnection) handleChunkRequest(data any) {
 	gc.mu.RLock()
-	defer gc.mu.RUnlock()
 	if gc.player == nil {
+		gc.mu.RUnlock()
 		gc.SendMessage(b.Message{
 			Type:  types.ChunkRequestMessage,
 			Error: "error.login.required",
 		})
 		return
 	}
+
+	// Calculate player's current chunk
+	playerChunkX, playerChunkY := gc.player.GetChunkCoord(ChunkSize)
+	gc.mu.RUnlock()
 
 	// Convert data to ChunkRequest
 	chunk, err := b.DecodeChunkRequest(data.([]byte))
@@ -385,12 +453,6 @@ func (gc *GameConnection) handleChunkRequest(data any) {
 		})
 		return
 	}
-
-	// Calculate player's current chunk
-	playerChunkX, playerChunkY := gc.player.GetChunkCoord(ChunkSize)
-
-	gc.server.mu.RLock()
-	defer gc.server.mu.RUnlock()
 
 	// Check if requested chunk is within MaxViewChunkDistance
 	chunkDx := chunk.ChunkX - playerChunkX
@@ -409,6 +471,7 @@ func (gc *GameConnection) handleChunkRequest(data any) {
 
 	chunkTiles := make([]b.ChunkTile, 0)
 
+	gc.server.mu.RLock()
 	// Collect tiles in this chunk
 	for x := startX; x < endX; x++ {
 		for y := startY; y < endY; y++ {
@@ -427,6 +490,7 @@ func (gc *GameConnection) handleChunkRequest(data any) {
 			}
 		}
 	}
+	gc.server.mu.RUnlock()
 
 	chunkPacket, err := b.EncodeChunkPacket(b.ChunkPacket{
 		ChunkX: chunk.ChunkX,
@@ -445,30 +509,45 @@ func (gc *GameConnection) handleChunkRequest(data any) {
 	})
 }
 
-// mutex lock required before call
+// handleDisconnect must be called with server mutex locked
 func (gc *GameConnection) handleDisconnect() {
 	gc.mu.RLock()
-	defer gc.mu.RUnlock()
 	log.Printf("Disconnected: %s\n", gc.udpAddr.String())
+
 	// If player is not nil, save it
+	var playerToSave *models.Player
+	var playerCoords [2]uint16
 	if gc.player != nil {
-		if err := config.DB.Save(gc.player).Error; err != nil {
-			log.Printf("Error saving player %s: %v\n", gc.player.Nickname, err)
-		} else {
-			log.Printf("Player %s saved successfully\n", gc.player.Nickname)
-		}
+		playerToSave = gc.player
+		playerCoords[0] = gc.player.CoordX
+		playerCoords[1] = gc.player.CoordY
 	}
-	// send player left message to nearby players
-	if gc.player != nil {
+	gc.mu.RUnlock()
+
+	// Create connections copy before deleting (we already have server lock)
+	connectionsCopy := make([]*GameConnection, 0, len(gc.server.connections))
+	for conn := range gc.server.connections {
+		connectionsCopy = append(connectionsCopy, conn)
+	}
+
+	// Delete connection (caller must have server mutex locked)
+	delete(gc.server.connections, gc)
+
+	if playerToSave != nil {
+		if err := config.DB.Save(playerToSave).Error; err != nil {
+			log.Printf("Error saving player %s: %v\n", playerToSave.Nickname, err)
+		} else {
+			log.Printf("Player %s saved successfully\n", playerToSave.Nickname)
+		}
+
+		// Send player left message to nearby players using internal broadcast
 		data := make([]byte, 4)
-		binary.LittleEndian.PutUint32(data, uint32(gc.player.ID))
-		gc.server.BroadcastInRange(b.Message{
+		binary.LittleEndian.PutUint32(data, uint32(playerToSave.ID))
+		gc.server.broadcastInRangeInternal(b.Message{
 			Type: types.PlayerLeftMessage,
 			Data: data,
-		}, gc.player.CoordX, gc.player.CoordY)
+		}, playerCoords[0], playerCoords[1], connectionsCopy)
 	}
-	// Delete connection
-	delete(gc.server.connections, gc)
 }
 
 func (gc *GameConnection) handlePingPong(msg b.Message) {
@@ -476,8 +555,15 @@ func (gc *GameConnection) handlePingPong(msg b.Message) {
 }
 
 func (gc *GameConnection) SendMessage(msg b.Message) error {
+	if gc == nil || gc.udpConn == nil {
+		return fmt.Errorf("invalid connection")
+	}
+
 	gc.mu.RLock()
-	defer gc.mu.RUnlock()
+	conn := gc.udpConn
+	addr := gc.udpAddr
+	gc.mu.RUnlock()
+
 	rawData, err := b.EncodeRawMessage(msg)
 	if err != nil {
 		return err
@@ -510,7 +596,7 @@ func (gc *GameConnection) SendMessage(msg b.Message) error {
 
 		packet.Write(chunk)
 
-		if _, err := gc.udpConn.WriteToUDP(packet.Bytes(), gc.udpAddr); err != nil {
+		if _, err := conn.WriteToUDP(packet.Bytes(), addr); err != nil {
 			log.Printf("Error sending UDP packet (chunk %d/%d): %v", i+1, totalChunks, err)
 			return err
 		}
@@ -543,6 +629,9 @@ func (gc *GameConnection) SendMessage(msg b.Message) error {
 			}
 
 			fmt.Printf("Mesaj %d için ACK alınamadı, iptal ediliyor.\n", msgID)
+			sentMessagesLock.Lock()
+			delete(sentMessages, msgID)
+			sentMessagesLock.Unlock()
 		}(messageID, sentMessage)
 	}
 	sentMessages[messageID] = sentMessage
@@ -571,26 +660,32 @@ func (s *GameServer) autoSaveRoutine() {
 
 	for range ticker.C {
 		s.mu.RLock()
-		activePlayers := make([]*models.Player, 0)
-		updatedTiles := make([]models.MapTile, 0)
+		connectionsCopy := make([]*GameConnection, 0, len(s.connections))
+		for conn := range s.connections {
+			connectionsCopy = append(connectionsCopy, conn)
+		}
+
+		// Collect updated tiles
+		updatedTiles := make([]models.MapTile, 0, len(s.updatedTiles))
+		for _, tile := range s.updatedTiles {
+			updatedTiles = append(updatedTiles, tile)
+		}
+		s.mu.RUnlock()
+
+		// Clear updated tiles map after collecting (need write lock for this)
+		s.mu.Lock()
+		s.updatedTiles = make(map[string]models.MapTile)
+		s.mu.Unlock()
 
 		// Collect all active players
-		for conn := range s.connections {
+		activePlayers := make([]*models.Player, 0)
+		for _, conn := range connectionsCopy {
 			conn.mu.RLock()
 			if conn.player != nil {
 				activePlayers = append(activePlayers, conn.player)
 			}
 			conn.mu.RUnlock()
 		}
-
-		// Collect updated tiles
-		for _, tile := range s.updatedTiles {
-			updatedTiles = append(updatedTiles, tile)
-		}
-
-		// Clear updated tiles map after collecting
-		s.updatedTiles = make(map[string]models.MapTile)
-		s.mu.RUnlock()
 
 		// Skip if nothing to save
 		if len(activePlayers) == 0 && len(updatedTiles) == 0 {
@@ -627,37 +722,79 @@ func (s *GameServer) UpdateTile(tile models.MapTile) {
 }
 
 func (gc *GameConnection) sendSyncState() {
-	gc.server.mu.RLock()
-	defer gc.server.mu.RUnlock()
+	// First get player info safely
+	gc.mu.RLock()
+	if gc.player == nil {
+		gc.mu.RUnlock()
+		return
+	}
+	playerCoords := [2]uint16{gc.player.CoordX, gc.player.CoordY}
+	playerID := gc.player.ID
+	gc.mu.RUnlock()
 
-	// Collect nearby players
-	nearbyPlayers := make([]*b.Player, 0)
+	// Then get server data safely - separate the operations
+	gc.server.mu.RLock()
+	connectionsCopy := make([]*GameConnection, 0, len(gc.server.connections))
 	for conn := range gc.server.connections {
-		conn.mu.RLock()
-		defer conn.mu.RUnlock()
-		if conn.player == nil || conn.player.ID == gc.player.ID {
+		connectionsCopy = append(connectionsCopy, conn)
+	}
+	gc.server.mu.RUnlock()
+
+	// Get countries separately to minimize lock time
+	gc.server.mu.RLock()
+	countriesCopy := make(map[uint8]models.Country)
+	for id, country := range gc.server.countries {
+		countriesCopy[id] = country
+	}
+	gc.server.mu.RUnlock()
+
+	// Collect nearby players without holding server lock
+	nearbyPlayers := make([]*b.Player, 0)
+	for _, conn := range connectionsCopy {
+		if conn == nil {
 			continue
 		}
 
-		dx := float64(conn.player.CoordX - gc.player.CoordX)
-		dy := float64(conn.player.CoordY - gc.player.CoordY)
+		conn.mu.RLock()
+		if conn.player == nil || conn.player.ID == playerID {
+			conn.mu.RUnlock()
+			continue
+		}
+
+		// Copy player data to avoid holding lock
+		playerData := &models.Player{
+			Model:     models.Model{ID: conn.player.ID},
+			CoordX:    conn.player.CoordX,
+			CoordY:    conn.player.CoordY,
+			Nickname:  conn.player.Nickname,
+			CountryID: conn.player.CountryID,
+			EXP:       conn.player.EXP,
+			Rank:      conn.player.Rank,
+			Health:    conn.player.Health,
+			MaxHealth: conn.player.MaxHealth,
+			UnitID:    conn.player.UnitID,
+		}
+		conn.mu.RUnlock()
+
+		dx := float64(playerData.CoordX - playerCoords[0])
+		dy := float64(playerData.CoordY - playerCoords[1])
 		distance := math.Sqrt(dx*dx + dy*dy)
 
 		if distance <= MaxViewDistance {
-			nearbyPlayers = append(nearbyPlayers, getBinaryPlayer(conn.player))
+			nearbyPlayers = append(nearbyPlayers, getBinaryPlayer(playerData))
 		}
 	}
 
 	// Binary countries
 	binaryCountries := make([]b.Country, 0)
-	for _, country := range gc.server.countries {
+	for _, country := range countriesCopy {
 		binaryCountries = append(binaryCountries, getBinaryCountry(country))
 	}
 
 	data, err := b.EncodeSyncStateData(&b.SyncStateData{
 		Players:     nearbyPlayers,
 		Countries:   binaryCountries,
-		OnlineCount: len(gc.server.connections),
+		OnlineCount: len(connectionsCopy),
 	})
 	if err != nil {
 		return
@@ -790,22 +927,35 @@ func handleUDPMessage(server *GameServer, conn *net.UDPConn, addr *net.UDPAddr, 
 }
 
 func findOrCreateConnection(server *GameServer, conn *net.UDPConn, addr *net.UDPAddr) *GameConnection {
-	server.mu.Lock()
-	defer server.mu.Unlock()
-
+	server.mu.RLock()
 	// Look for existing connection with this address
 	for gc := range server.connections {
 		gc.mu.RLock()
-		defer gc.mu.RUnlock()
 		if gc.udpAddr.String() == addr.String() {
+			gc.mu.RUnlock()
+			server.mu.RUnlock()
 			return gc
 		}
+		gc.mu.RUnlock()
 	}
+	server.mu.RUnlock()
 
 	// Create new connection if not found
+	server.mu.Lock()
+	defer server.mu.Unlock()
+
+	// Double-check after acquiring write lock
+	for gc := range server.connections {
+		gc.mu.RLock()
+		if gc.udpAddr.String() == addr.String() {
+			gc.mu.RUnlock()
+			return gc
+		}
+		gc.mu.RUnlock()
+	}
+
 	gc := NewGameConnection(addr, conn, server)
 	fmt.Printf("New connection from %s\n", addr.String())
-	server.connections[gc] = true
 
 	// Make sure we don't exceed max connections
 	if len(server.connections) >= MaxConnections {
@@ -817,6 +967,7 @@ func findOrCreateConnection(server *GameServer, conn *net.UDPConn, addr *net.UDP
 		return nil
 	}
 
+	server.connections[gc] = true
 	return gc
 }
 
@@ -825,16 +976,33 @@ func (s *GameServer) cleanupInactiveConnections() {
 	defer ticker.Stop()
 
 	for range ticker.C {
-		s.mu.Lock()
-		now := time.Now()
+		s.mu.RLock()
+		connectionsCopy := make([]*GameConnection, 0, len(s.connections))
 		for gc := range s.connections {
+			connectionsCopy = append(connectionsCopy, gc)
+		}
+		s.mu.RUnlock()
+
+		now := time.Now()
+		connectionsToRemove := make([]*GameConnection, 0)
+
+		for _, gc := range connectionsCopy {
 			gc.mu.RLock()
-			if now.Sub(gc.lastHeartbeat) > 30*time.Second {
+			shouldRemove := now.Sub(gc.lastHeartbeat) > 30*time.Second
+			gc.mu.RUnlock()
+
+			if shouldRemove {
+				connectionsToRemove = append(connectionsToRemove, gc)
+			}
+		}
+
+		if len(connectionsToRemove) > 0 {
+			s.mu.Lock()
+			for _, gc := range connectionsToRemove {
 				gc.handleDisconnect()
 			}
-			gc.mu.RUnlock()
+			s.mu.Unlock()
 		}
-		s.mu.Unlock()
 	}
 }
 
@@ -844,22 +1012,5 @@ func checkAndRequestMissingPackets() {
 
 	for range ticker.C {
 		b.CheckAndRequestMissingPackets()
-	}
-}
-
-func cleanupOldSentMessages() {
-	ticker := time.NewTicker(10 * time.Second)
-	defer ticker.Stop()
-
-	for range ticker.C {
-		cutoff := time.Now().Add(-10 * time.Second)
-
-		sentMessagesLock.Lock()
-		for id, msg := range sentMessages {
-			if msg.SentAt.Before(cutoff) {
-				delete(sentMessages, id)
-			}
-		}
-		sentMessagesLock.Unlock()
 	}
 }

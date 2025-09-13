@@ -107,13 +107,17 @@ const (
 )
 
 func CheckAndRequestMissingPackets() {
-	packetBufferLock.RLock()
-	defer packetBufferLock.RUnlock()
+	packetBufferLock.Lock()
+	messagesToCheck := make(map[uint32]*ReceivedMessage)
+	for id, msg := range packetBuffer {
+		messagesToCheck[id] = msg
+	}
+	packetBufferLock.Unlock()
 
 	now := time.Now()
 
 	// check missing packets for received messages
-	for messageID, msg := range packetBuffer {
+	for messageID, msg := range messagesToCheck {
 		if msg.Received >= msg.TotalChunks {
 			continue
 		}

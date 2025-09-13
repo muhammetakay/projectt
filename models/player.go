@@ -29,6 +29,25 @@ func (m Player) MarshalJSON() ([]byte, error) {
 	return json.Marshal(Alias(m))
 }
 
+func (m *Player) Copy() *Player {
+	return &Player{
+		Model:     m.Model,
+		Nickname:  m.Nickname,
+		UserID:    m.UserID,
+		CountryID: m.CountryID,
+		Country:   m.Country,
+		EXP:       m.EXP,
+		Level:     m.Level,
+		Rank:      m.Rank,
+		Health:    m.Health,
+		MaxHealth: m.MaxHealth,
+		CoordX:    m.CoordX,
+		CoordY:    m.CoordY,
+		UnitID:    m.UnitID,
+		Unit:      m.Unit,
+	}
+}
+
 // Level calculates player level based on EXP with logarithmic progression
 func (m *Player) GetLevel() uint {
 	if m.EXP == 0 {
