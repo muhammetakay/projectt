@@ -383,20 +383,7 @@ func (gc *GameConnection) handlePlayerData(data any) {
 		conn.mu.RLock()
 		if conn.player != nil && conn.player.ID == uint(req.PlayerID) {
 			// Create a copy of the player data to avoid holding the lock
-			player = &models.Player{
-				Model: models.Model{
-					ID: conn.player.ID,
-				},
-				CoordX:    conn.player.CoordX,
-				CoordY:    conn.player.CoordY,
-				Nickname:  conn.player.Nickname,
-				CountryID: conn.player.CountryID,
-				EXP:       conn.player.EXP,
-				Rank:      conn.player.Rank,
-				Health:    conn.player.Health,
-				MaxHealth: conn.player.MaxHealth,
-				UnitID:    conn.player.UnitID,
-			}
+			player = conn.player.Copy()
 		}
 		conn.mu.RUnlock()
 		if player != nil {
@@ -762,18 +749,7 @@ func (gc *GameConnection) sendSyncState() {
 		}
 
 		// Copy player data to avoid holding lock
-		playerData := &models.Player{
-			Model:     models.Model{ID: conn.player.ID},
-			CoordX:    conn.player.CoordX,
-			CoordY:    conn.player.CoordY,
-			Nickname:  conn.player.Nickname,
-			CountryID: conn.player.CountryID,
-			EXP:       conn.player.EXP,
-			Rank:      conn.player.Rank,
-			Health:    conn.player.Health,
-			MaxHealth: conn.player.MaxHealth,
-			UnitID:    conn.player.UnitID,
-		}
+		playerData := conn.player.Copy()
 		conn.mu.RUnlock()
 
 		dx := float64(playerData.CoordX - playerCoords[0])
