@@ -2,28 +2,25 @@ package binary
 
 import (
 	"bytes"
-	"encoding/binary"
 	"fmt"
-)
-
-type ChatMessageType uint8
-
-const (
-	ChatMessageTypeGeneral ChatMessageType = iota
-	ChatMessageTypeCountry
+	"strings"
 )
 
 type ChatMessage struct {
-	Type    ChatMessageType // 1 byte
-	From    uint32          // 4 byte (Player ID)
-	Message string          // 2 byte (Maximum 255 characters)
+	From    string // 2 byte (Player name, Maximum 255 characters)
+	Message string // 2 byte (Maximum 255 characters)
 }
 
 func EncodeChatMessage(m *ChatMessage) ([]byte, error) {
 	buf := new(bytes.Buffer)
 
-	buf.WriteByte(uint8(m.Type))
-	binary.Write(buf, binary.LittleEndian, m.From)
+	fromBytes := []byte(m.From)
+	fromLen := len(fromBytes)
+	if fromLen > 255 {
+		return nil, fmt.Errorf("from name too long")
+	}
+	buf.WriteByte(uint8(fromLen))
+	buf.Write(fromBytes)
 
 	messageBytes := []byte(m.Message)
 	messageLen := len(messageBytes)
@@ -37,24 +34,12 @@ func EncodeChatMessage(m *ChatMessage) ([]byte, error) {
 }
 
 func DecodeChatMessage(data []byte) (*ChatMessage, error) {
-	if len(data) < 6 { // minimum 1 + 4 + 1 byte
+	if len(data) < 1 { // minimum 1 byte for message length
 		return nil, fmt.Errorf("data too short")
 	}
 
 	buf := bytes.NewReader(data)
 	m := &ChatMessage{}
-
-	// Type (1 byte)
-	t, err := buf.ReadByte()
-	if err != nil {
-		return nil, err
-	}
-	m.Type = ChatMessageType(t)
-
-	// From (4 byte)
-	if err := binary.Read(buf, binary.LittleEndian, &m.From); err != nil {
-		return nil, err
-	}
 
 	// Message length (1 byte)
 	msgLenByte, err := buf.ReadByte()
@@ -74,6 +59,7 @@ func DecodeChatMessage(data []byte) (*ChatMessage, error) {
 		return nil, err
 	}
 	m.Message = string(msgBytes)
+	m.Message = strings.TrimSpace(m.Message)
 
 	return m, nil
 }

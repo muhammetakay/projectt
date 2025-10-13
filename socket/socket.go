@@ -11,6 +11,7 @@ import (
 	"projectt/config"
 	"projectt/models"
 	"projectt/types"
+	"strings"
 	"sync"
 	"time"
 )
@@ -227,7 +228,7 @@ func (gc *GameConnection) handleChat(data []byte) {
 		return
 	}
 
-	_, err := b.DecodeChatMessage(data)
+	msg, err := b.DecodeChatMessage(data)
 	if err != nil {
 		gc.SendMessage(b.Message{
 			Type:  types.ChatMessage,
@@ -236,11 +237,62 @@ func (gc *GameConnection) handleChat(data []byte) {
 		return
 	}
 
-	// Broadcast chat message to all clients
-	gc.server.Broadcast(b.Message{
-		Type: types.ChatMessage,
-		Data: data,
-	})
+	if len(msg.Message) == 0 {
+		gc.SendMessage(b.Message{
+			Type:  types.ChatMessage,
+			Error: "error.chat.empty",
+		})
+		return
+	}
+
+	if msg.Message[0] == '/' {
+		// Handle commands here (e.g., /help, /whisper, etc.)
+		parts := strings.Fields(msg.Message)
+		switch parts[0] {
+		case "/help":
+			gc.SendMessage(b.Message{
+				Type:  types.ChatMessage,
+				Error: "Help is on the way!",
+			})
+		case "/w":
+			if len(parts) < 3 {
+				gc.SendMessage(b.Message{
+					Type:  types.ChatMessage,
+					Error: "error.chat.usage_whisper",
+				})
+			} else {
+				targetPlayer := parts[1]
+				whisperMessage := strings.Join(parts[2:], " ")
+				gc.SendMessage(b.Message{
+					Type:  types.ChatMessage,
+					Error: fmt.Sprintf("Whispering to %s: %s", targetPlayer, whisperMessage),
+				})
+			}
+		default:
+			gc.SendMessage(b.Message{
+				Type:  types.ChatMessage,
+				Error: "error.chat.unknown_command",
+			})
+		}
+	} else {
+		chatMessage := b.ChatMessage{
+			From:    gc.player.Nickname,
+			Message: msg.Message,
+		}
+		data, err := b.EncodeChatMessage(&chatMessage)
+		if err != nil {
+			gc.SendMessage(b.Message{
+				Type:  types.ChatMessage,
+				Error: "error.chat.encoding_failed",
+			})
+			return
+		}
+		// Broadcast chat message to all clients
+		gc.server.Broadcast(b.Message{
+			Type: types.ChatMessage,
+			Data: data,
+		})
+	}
 }
 
 func (gc *GameConnection) handleMovement(data any) {
