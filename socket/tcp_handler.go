@@ -24,7 +24,7 @@ func handleTCPConnection(server *GameServer, conn net.Conn) {
 	if len(server.connections) >= MaxConnections {
 		server.mu.Unlock()
 		gc.SendMessage(b.Message{
-			Type:  types.SystemMessage,
+			Type:  types.LoginMessage,
 			Error: "error.server.full",
 		})
 		return
