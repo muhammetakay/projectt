@@ -7,17 +7,6 @@ import (
 	"projectt/types"
 )
 
-var AckRequiredMessageTypes = []types.MessageType{
-	types.LoginMessage,
-	types.ChatMessage,
-	types.SystemMessage,
-	types.UnauthorizedMessage,
-	types.PlayerJoinedMessage,
-	types.PlayerLeftMessage,
-	types.SyncStateMessage,
-	types.ChunkRequestMessage,
-}
-
 type Message struct {
 	Type  types.MessageType
 	Data  []byte

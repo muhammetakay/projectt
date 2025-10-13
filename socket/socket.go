@@ -1,7 +1,6 @@
 package socket
 
 import (
-	"bytes"
 	"encoding/binary"
 	"fmt"
 	"log"
@@ -12,7 +11,6 @@ import (
 	"projectt/config"
 	"projectt/models"
 	"projectt/types"
-	"slices"
 	"sync"
 	"time"
 )
@@ -22,33 +20,13 @@ const (
 	ChunkSize            = 16
 	MaxViewChunkDistance = 3
 	MaxViewDistance      = ChunkSize * MaxViewChunkDistance
-
-	MaxUDPPayload = 1200
 )
-
-var (
-	messageIDCounter   uint32 = 0
-	messageIDCounterMu sync.RWMutex
-)
-
-var (
-	sentMessages     = make(map[uint32]*b.SentMessage)
-	sentMessagesLock sync.RWMutex
-)
-
-func nextMessageID() uint32 {
-	messageIDCounterMu.Lock()
-	defer messageIDCounterMu.Unlock()
-	messageIDCounter++
-	return messageIDCounter
-}
 
 type GameConnection struct {
-	udpAddr *net.UDPAddr // UDP client address
-	udpConn *net.UDPConn // UDP connection (shared)
-	player  *models.Player
-	server  *GameServer
-	mu      sync.RWMutex // Mutex for thread-safe access
+	conn   net.Conn // TCP client connection
+	player *models.Player
+	server *GameServer
+	mu     sync.RWMutex // Mutex for thread-safe access
 
 	lastHeartbeat time.Time
 }
@@ -70,11 +48,10 @@ func NewGameServer() *GameServer {
 	}
 }
 
-func NewGameConnection(addr *net.UDPAddr, conn *net.UDPConn, server *GameServer) *GameConnection {
+func NewGameConnection(conn net.Conn, server *GameServer) *GameConnection {
 	return &GameConnection{
-		udpAddr: addr,
-		udpConn: conn,
-		server:  server,
+		conn:   conn,
+		server: server,
 	}
 }
 
@@ -100,7 +77,7 @@ func (s *GameServer) broadcastInternal(msg b.Message, connections []*GameConnect
 			}
 			if err := c.SendMessage(msg); err != nil {
 				log.Printf("Error broadcasting to %s: %v\n",
-					c.udpAddr.String(), err)
+					c.conn.RemoteAddr().String(), err)
 			}
 		}(conn)
 	}
@@ -150,7 +127,7 @@ func (s *GameServer) broadcastInRangeInternal(msg b.Message, centerX, centerY ui
 			if playerWithinRange {
 				if err := c.SendMessage(msg); err != nil {
 					log.Printf("Error broadcasting to %s: %v\n",
-						c.udpAddr.String(), err)
+						c.conn.RemoteAddr().String(), err)
 				}
 			}
 		}(conn)
@@ -499,7 +476,7 @@ func (gc *GameConnection) handleChunkRequest(data any) {
 // handleDisconnect must be called with server mutex locked
 func (gc *GameConnection) handleDisconnect() {
 	gc.mu.RLock()
-	log.Printf("Disconnected: %s\n", gc.udpAddr.String())
+	log.Printf("Disconnected: %s\n", gc.conn.RemoteAddr().String())
 
 	// If player is not nil, save it
 	var playerToSave *models.Player
@@ -542,13 +519,12 @@ func (gc *GameConnection) handlePingPong(msg b.Message) {
 }
 
 func (gc *GameConnection) SendMessage(msg b.Message) error {
-	if gc == nil || gc.udpConn == nil {
+	if gc == nil || gc.conn == nil {
 		return fmt.Errorf("invalid connection")
 	}
 
 	gc.mu.RLock()
-	conn := gc.udpConn
-	addr := gc.udpAddr
+	conn := gc.conn
 	gc.mu.RUnlock()
 
 	rawData, err := b.EncodeRawMessage(msg)
@@ -556,89 +532,17 @@ func (gc *GameConnection) SendMessage(msg b.Message) error {
 		return err
 	}
 
-	messageID := nextMessageID()
+	// Combine length and data into a single buffer
+	messageBuffer := make([]byte, 4+len(rawData))
+	binary.LittleEndian.PutUint32(messageBuffer[:4], uint32(len(rawData)))
+	copy(messageBuffer[4:], rawData)
 
-	// Her parçaya 5 byte başlık eklenecek: [packetType:1][messageID:2][index:1][count:1]
-	maxChunkSize := MaxUDPPayload - 5
-	totalChunks := byte((len(rawData) + maxChunkSize - 1) / maxChunkSize)
-
-	chunks := make([][]byte, 0)
-
-	for i := byte(0); i < totalChunks; i++ {
-		start := int(i) * maxChunkSize
-		end := start + maxChunkSize
-		if end > len(rawData) {
-			end = len(rawData)
-		}
-
-		chunk := rawData[start:end]
-		chunks = append(chunks, chunk)
-
-		packet := new(bytes.Buffer)
-		// Header: packetType (1 byte), messageID (2 byte), chunkIndex (1 byte), totalChunks (1 byte)
-		packet.WriteByte(b.NormalPacket)
-		binary.Write(packet, binary.LittleEndian, messageID)
-		packet.WriteByte(i)
-		packet.WriteByte(totalChunks)
-
-		packet.Write(chunk)
-
-		if _, err := conn.WriteToUDP(packet.Bytes(), addr); err != nil {
-			log.Printf("Error sending UDP packet (chunk %d/%d): %v", i+1, totalChunks, err)
-			return err
-		}
+	// Write entire message in a single call
+	if _, err := conn.Write(messageBuffer); err != nil {
+		return fmt.Errorf("failed to write message: %v", err)
 	}
-
-	sentMessagesLock.Lock()
-	defer sentMessagesLock.Unlock()
-	ackRequired := slices.Contains(b.AckRequiredMessageTypes, msg.Type)
-	sentMessage := &b.SentMessage{
-		Chunks:         chunks,
-		SentAt:         time.Now(),
-		GameConnection: gc,
-	}
-	if ackRequired {
-		sentMessage.Ack = make(chan bool, 1)
-		go func(msgID uint32, msg *b.SentMessage) {
-			retries := 0
-			for retries < 3 {
-				select {
-				case <-msg.Ack:
-					sentMessagesLock.Lock()
-					delete(sentMessages, msgID)
-					sentMessagesLock.Unlock()
-					return
-				case <-time.After(50 * time.Millisecond):
-					fmt.Printf("ACK alınmadı. %d. kez yeniden gönderiliyor.\n", retries+1)
-					resendMessage(msgID, msg)
-					retries++
-				}
-			}
-
-			fmt.Printf("Mesaj %d için ACK alınamadı, iptal ediliyor.\n", msgID)
-			sentMessagesLock.Lock()
-			delete(sentMessages, msgID)
-			sentMessagesLock.Unlock()
-		}(messageID, sentMessage)
-	}
-	sentMessages[messageID] = sentMessage
 
 	return nil
-}
-func resendMessage(messageID uint32, msg *b.SentMessage) {
-	for i, chunk := range msg.Chunks {
-		packet := new(bytes.Buffer)
-		packet.WriteByte(b.NormalPacket)
-		binary.Write(packet, binary.LittleEndian, messageID)
-		packet.WriteByte(byte(i))
-		packet.WriteByte(byte(len(msg.Chunks)))
-		packet.Write(chunk)
-
-		conn := msg.GameConnection.(*GameConnection)
-		conn.udpConn.WriteToUDP(packet.Bytes(), conn.udpAddr)
-	}
-
-	msg.SentAt = time.Now()
 }
 
 func (s *GameServer) autoSaveRoutine() {
@@ -808,143 +712,30 @@ func StartServer() {
 		server.tiles[key] = tile
 	}
 
-	// UDP setup
-	addr, err := net.ResolveUDPAddr("udp", ":"+port)
-	if err != nil {
-		log.Fatalf("Failed to resolve address: %v", err)
-	}
-
-	conn, err := net.ListenUDP("udp", addr)
+	// TCP setup
+	listener, err := net.Listen("tcp", ":"+port)
 	if err != nil {
 		log.Fatalf("Server could not be started: %v", err)
 	}
-	defer conn.Close()
+	defer listener.Close()
 
-	fmt.Printf("UDP server is running on port %s...\n", port)
+	fmt.Printf("TCP server is running on port %s...\n", port)
 
 	// Start auto-save routine
 	go server.autoSaveRoutine()
 	// Start cleanup routine
 	go server.cleanupInactiveConnections()
-	// Start checking for missing packets
-	go checkAndRequestMissingPackets()
-	// Start cleanup old sent messages
-	// go cleanupOldSentMessages()
 
-	buffer := make([]byte, 4096)
 	for {
-		n, remoteAddr, err := conn.ReadFromUDP(buffer)
+		conn, err := listener.Accept()
 		if err != nil {
-			log.Printf("Error reading from UDP: %v", err)
+			log.Printf("Error accepting connection: %v", err)
 			continue
 		}
 
-		// Handle message
-		go handleUDPMessage(server, conn, remoteAddr, buffer[:n])
+		// Handle connection
+		go handleTCPConnection(server, conn)
 	}
-}
-
-func handleUDPMessage(server *GameServer, conn *net.UDPConn, addr *net.UDPAddr, data []byte) {
-	if len(data) < 1 {
-		return
-	}
-
-	var msg *b.Message
-	switch data[0] {
-	case b.NormalPacket:
-		m, err := b.HandleIncomingPacket(data, conn, addr)
-		if err != nil {
-			log.Printf("Handle udp message error from %s, Error: %s\n", addr.String(), err)
-			return
-		}
-		msg = m
-	case b.ResendPacket:
-		sentMessagesLock.RLock()
-		defer sentMessagesLock.RUnlock()
-		b.HandleResendRequest(data, sentMessages, conn, addr)
-		return
-	case b.AckPacket:
-		sentMessagesLock.Lock()
-		defer sentMessagesLock.Unlock()
-		b.HandleAckRequest(data, sentMessages)
-		return
-	default:
-		return
-	}
-
-	// Find or create game connection for this address
-	gc := findOrCreateConnection(server, conn, addr)
-	gc.mu.Lock()
-	// Update last heartbeat time
-	gc.lastHeartbeat = time.Now()
-	gc.mu.Unlock()
-
-	// Handle message based on type
-	switch msg.Type {
-	case types.LoginMessage:
-		gc.handleLogin(msg.Data)
-	case types.ChatMessage:
-		gc.handleChat(msg.Data)
-	case types.PlayerMovementMessage:
-		gc.handleMovement(msg.Data)
-	case types.PlayerDataMessage:
-		gc.handlePlayerData(msg.Data)
-	case types.ChunkRequestMessage:
-		gc.handleChunkRequest(msg.Data)
-	case types.DisconnectMessage:
-		server.mu.Lock()
-		defer server.mu.Unlock()
-		gc.handleDisconnect()
-	case types.PingPongMessage:
-		gc.handlePingPong(*msg)
-	default:
-		// unknown message
-	}
-}
-
-func findOrCreateConnection(server *GameServer, conn *net.UDPConn, addr *net.UDPAddr) *GameConnection {
-	server.mu.RLock()
-	// Look for existing connection with this address
-	for gc := range server.connections {
-		gc.mu.RLock()
-		if gc.udpAddr.String() == addr.String() {
-			gc.mu.RUnlock()
-			server.mu.RUnlock()
-			return gc
-		}
-		gc.mu.RUnlock()
-	}
-	server.mu.RUnlock()
-
-	// Create new connection if not found
-	server.mu.Lock()
-	defer server.mu.Unlock()
-
-	// Double-check after acquiring write lock
-	for gc := range server.connections {
-		gc.mu.RLock()
-		if gc.udpAddr.String() == addr.String() {
-			gc.mu.RUnlock()
-			return gc
-		}
-		gc.mu.RUnlock()
-	}
-
-	gc := NewGameConnection(addr, conn, server)
-	fmt.Printf("New connection from %s\n", addr.String())
-
-	// Make sure we don't exceed max connections
-	if len(server.connections) >= MaxConnections {
-		gc.SendMessage(b.Message{
-			Type:  types.SystemMessage,
-			Error: "error.server.full",
-		})
-		gc.handleDisconnect()
-		return nil
-	}
-
-	server.connections[gc] = true
-	return gc
 }
 
 func (s *GameServer) cleanupInactiveConnections() {
@@ -979,14 +770,5 @@ func (s *GameServer) cleanupInactiveConnections() {
 			}
 			s.mu.Unlock()
 		}
-	}
-}
-
-func checkAndRequestMissingPackets() {
-	ticker := time.NewTicker(500 * time.Millisecond)
-	defer ticker.Stop()
-
-	for range ticker.C {
-		b.CheckAndRequestMissingPackets()
 	}
 }
