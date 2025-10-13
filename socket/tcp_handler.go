@@ -33,10 +33,10 @@ func handleTCPConnection(server *GameServer, conn net.Conn) {
 	server.mu.Unlock()
 
 	// send welcome message
-	// gc.SendMessage(b.Message{
-	// 	Type: types.SystemMessage,
-	// 	Data: []byte("Welcome to Project T!"),
-	// })
+	gc.SendMessage(b.Message{
+		Type: types.SystemMessage,
+		Data: []byte("Welcome to Project T!"),
+	})
 
 	// Read messages in a loop
 	for {
