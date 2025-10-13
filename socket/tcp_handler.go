@@ -7,6 +7,7 @@ import (
 	"log"
 	"net"
 	b "projectt/binary"
+	"projectt/config"
 	"projectt/types"
 	"time"
 )
@@ -21,7 +22,7 @@ func handleTCPConnection(server *GameServer, conn net.Conn) {
 
 	// Make sure we don't exceed max connections
 	server.mu.Lock()
-	if len(server.connections) >= MaxConnections {
+	if len(server.connections) >= config.MaxPlayers {
 		server.mu.Unlock()
 		gc.SendMessage(b.Message{
 			Type:  types.LoginMessage,

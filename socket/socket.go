@@ -16,13 +16,6 @@ import (
 	"time"
 )
 
-const (
-	MaxConnections       = 100
-	ChunkSize            = 16
-	MaxViewChunkDistance = 3
-	MaxViewDistance      = ChunkSize * MaxViewChunkDistance
-)
-
 type GameConnection struct {
 	conn   net.Conn // TCP client connection
 	player *models.Player
@@ -121,7 +114,7 @@ func (s *GameServer) broadcastInRangeInternal(msg b.Message, centerX, centerY ui
 			dx := float64(c.player.CoordX - centerX)
 			dy := float64(c.player.CoordY - centerY)
 			distance := math.Sqrt(dx*dx + dy*dy)
-			playerWithinRange := distance <= MaxViewDistance
+			playerWithinRange := distance <= float64(config.MaxViewDistance)
 			c.mu.RUnlock()
 
 			// Send only if within view distance
@@ -430,7 +423,7 @@ func (gc *GameConnection) handlePlayerData(data any) {
 	distance := math.Sqrt(float64(dx*dx + dy*dy))
 
 	// Check if player is within MaxViewDistance
-	if distance > MaxViewDistance {
+	if distance > float64(config.MaxViewDistance) {
 		return
 	}
 
@@ -457,7 +450,7 @@ func (gc *GameConnection) handleChunkRequest(data any) {
 	}
 
 	// Calculate player's current chunk
-	playerChunkX, playerChunkY := gc.player.GetChunkCoord(ChunkSize)
+	playerChunkX, playerChunkY := gc.player.GetChunkCoord(config.ChunkSize)
 	gc.mu.RUnlock()
 
 	// Convert data to ChunkRequest
@@ -475,15 +468,15 @@ func (gc *GameConnection) handleChunkRequest(data any) {
 	chunkDy := chunk.ChunkY - playerChunkY
 	chunkDistance := math.Sqrt(float64(chunkDx*chunkDx + chunkDy*chunkDy))
 
-	if chunkDistance > math.Hypot(float64(MaxViewChunkDistance), float64(MaxViewChunkDistance)) {
+	if chunkDistance > math.Hypot(float64(config.MaxChunkViewDistance), float64(config.MaxChunkViewDistance)) {
 		return
 	}
 
 	// Calculate chunk boundaries
-	startX := chunk.ChunkX * ChunkSize
-	startY := chunk.ChunkY * ChunkSize
-	endX := startX + ChunkSize
-	endY := startY + ChunkSize
+	startX := chunk.ChunkX * uint16(config.ChunkSize)
+	startY := chunk.ChunkY * uint16(config.ChunkSize)
+	endX := startX + uint16(config.ChunkSize)
+	endY := startY + uint16(config.ChunkSize)
 
 	chunkTiles := make([]b.ChunkTile, 0)
 
@@ -712,7 +705,7 @@ func (gc *GameConnection) sendSyncState() {
 		dy := float64(playerData.CoordY - playerCoords[1])
 		distance := math.Sqrt(dx*dx + dy*dy)
 
-		if distance <= MaxViewDistance {
+		if distance <= float64(config.MaxViewDistance) {
 			nearbyPlayers = append(nearbyPlayers, getBinaryPlayer(playerData))
 		}
 	}

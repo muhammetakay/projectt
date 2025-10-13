@@ -19,6 +19,7 @@ func main() {
 	if err != nil {
 		log.Fatal("Error loading .env file")
 	}
+	config.Init()
 
 	// database connection
 	config.ConnectDatabase()

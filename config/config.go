@@ -5,13 +5,43 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"strconv"
 	"time"
 
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
 )
 
-var DB *gorm.DB
+var (
+	DB *gorm.DB
+
+	MaxPlayers           int
+	ChunkSize            int
+	MaxChunkViewDistance int
+	MaxViewDistance      int
+)
+
+func Init() {
+	var err error
+
+	// Load game settings from environment variables
+	MaxPlayers, err = strconv.Atoi(os.Getenv("MAX_PLAYERS"))
+	if err != nil {
+		log.Fatalf("Invalid MAX_PLAYERS value: %v", err)
+	}
+
+	ChunkSize, err = strconv.Atoi(os.Getenv("CHUNK_SIZE"))
+	if err != nil {
+		log.Fatalf("Invalid CHUNK_SIZE value: %v", err)
+	}
+
+	MaxChunkViewDistance, err = strconv.Atoi(os.Getenv("MAX_CHUNK_VIEW_DISTANCE"))
+	if err != nil {
+		log.Fatalf("Invalid MAX_CHUNK_VIEW_DISTANCE value: %v", err)
+	}
+
+	MaxViewDistance = ChunkSize * MaxChunkViewDistance
+}
 
 func ConnectDatabase() {
 	host := os.Getenv("DB_HOST")
