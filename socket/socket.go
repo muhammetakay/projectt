@@ -16,6 +16,10 @@ import (
 	"time"
 )
 
+var (
+	server *GameServer
+)
+
 type GameConnection struct {
 	conn   net.Conn // TCP client connection
 	player *models.Player
@@ -591,59 +595,63 @@ func (gc *GameConnection) SendMessage(msg b.Message) error {
 }
 
 func (s *GameServer) autoSaveRoutine() {
-	ticker := time.NewTicker(10 * time.Second)
+	ticker := time.NewTicker(60 * time.Second)
 	defer ticker.Stop()
 
 	for range ticker.C {
-		s.mu.RLock()
-		connectionsCopy := make([]*GameConnection, 0, len(s.connections))
-		for conn := range s.connections {
-			connectionsCopy = append(connectionsCopy, conn)
+		Save()
+	}
+}
+
+func Save() {
+	server.mu.RLock()
+	connectionsCopy := make([]*GameConnection, 0, len(server.connections))
+	for conn := range server.connections {
+		connectionsCopy = append(connectionsCopy, conn)
+	}
+
+	// Collect updated tiles
+	updatedTiles := make([]models.MapTile, 0, len(server.updatedTiles))
+	for _, tile := range server.updatedTiles {
+		updatedTiles = append(updatedTiles, tile)
+	}
+	server.mu.RUnlock()
+
+	// Clear updated tiles map after collecting (need write lock for this)
+	server.mu.Lock()
+	server.updatedTiles = make(map[string]models.MapTile)
+	server.mu.Unlock()
+
+	// Collect all active players
+	activePlayers := make([]*models.Player, 0)
+	for _, conn := range connectionsCopy {
+		conn.mu.RLock()
+		if conn.player != nil {
+			activePlayers = append(activePlayers, conn.player)
 		}
+		conn.mu.RUnlock()
+	}
 
-		// Collect updated tiles
-		updatedTiles := make([]models.MapTile, 0, len(s.updatedTiles))
-		for _, tile := range s.updatedTiles {
-			updatedTiles = append(updatedTiles, tile)
+	// Skip if nothing to save
+	if len(activePlayers) == 0 && len(updatedTiles) == 0 {
+		return
+	}
+
+	// Save players in batches
+	if len(activePlayers) > 0 {
+		if err := config.DB.Save(&activePlayers).Error; err != nil {
+			log.Printf("Error during player auto-save: %v\n", err)
+		} else {
+			log.Printf("Auto-saved %d players\n", len(activePlayers))
 		}
-		s.mu.RUnlock()
+	}
 
-		// Clear updated tiles map after collecting (need write lock for this)
-		s.mu.Lock()
-		s.updatedTiles = make(map[string]models.MapTile)
-		s.mu.Unlock()
-
-		// Collect all active players
-		activePlayers := make([]*models.Player, 0)
-		for _, conn := range connectionsCopy {
-			conn.mu.RLock()
-			if conn.player != nil {
-				activePlayers = append(activePlayers, conn.player)
-			}
-			conn.mu.RUnlock()
-		}
-
-		// Skip if nothing to save
-		if len(activePlayers) == 0 && len(updatedTiles) == 0 {
-			continue
-		}
-
-		// Save players in batches
-		if len(activePlayers) > 0 {
-			if err := config.DB.Save(&activePlayers).Error; err != nil {
-				log.Printf("Error during player auto-save: %v\n", err)
-			} else {
-				log.Printf("Auto-saved %d players\n", len(activePlayers))
-			}
-		}
-
-		// Save updated tiles in batches
-		if len(updatedTiles) > 0 {
-			if err := config.DB.Save(&updatedTiles).Error; err != nil {
-				log.Printf("Error during tile auto-save: %v\n", err)
-			} else {
-				log.Printf("Auto-saved %d tiles\n", len(updatedTiles))
-			}
+	// Save updated tiles in batches
+	if len(updatedTiles) > 0 {
+		if err := config.DB.Save(&updatedTiles).Error; err != nil {
+			log.Printf("Error during tile auto-save: %v\n", err)
+		} else {
+			log.Printf("Auto-saved %d tiles\n", len(updatedTiles))
 		}
 	}
 }
@@ -734,7 +742,7 @@ func (gc *GameConnection) sendSyncState() {
 
 func StartServer() {
 	port := os.Getenv("APP_PORT")
-	server := NewGameServer()
+	server = NewGameServer()
 
 	// Load countries from the database
 	var countries []models.Country

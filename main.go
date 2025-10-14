@@ -2,9 +2,12 @@ package main
 
 import (
 	"log"
+	"os"
+	"os/signal"
 	"projectt/config"
 	"projectt/migrations"
 	"projectt/socket"
+	"syscall"
 	"time"
 
 	"github.com/joho/godotenv"
@@ -27,5 +30,18 @@ func main() {
 	migrations.Migrate(config.DB)
 
 	// start socket server
-	socket.StartServer()
+	go func() {
+		socket.StartServer()
+	}()
+
+	// Graceful shutdown
+	quit := make(chan os.Signal, 1)
+	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
+	<-quit
+	log.Println("Shutting down server...")
+
+	// Save any necessary data before exiting
+	socket.Save()
+
+	log.Println("Server gracefully stopped")
 }
