@@ -11,6 +11,11 @@ type Unit struct {
 	OwnerCountry   *Country       `json:"owner_country" gorm:"foreignKey:OwnerCountryID;references:ID"`
 	Health         int            `json:"health" gorm:"type:integer;not null"`
 	MaxHealth      int            `json:"max_health" gorm:"type:integer;not null"`
-	CoordX         int            `json:"coord_x" gorm:"default:0"`
-	CoordY         int            `json:"coord_y" gorm:"default:0"`
+	CoordX         float32        `json:"coord_x" gorm:"default:0"`
+	CoordY         float32        `json:"coord_y" gorm:"default:0"`
+	DirX           float32        `json:"dir_x" gorm:"default:0"`
+	DirY           float32        `json:"dir_y" gorm:"default:0"`
+	MaxSpeed       float32        `json:"max_speed" gorm:"type:float;not null"`
+	PlayerID       *uint          `json:"player_id" gorm:"type:integer;null"` // ID of the player controlling this unit
+	Player         *Player        `json:"player,omitempty" gorm:"foreignKey:PlayerID;references:ID"`
 }

@@ -6,13 +6,26 @@ import (
 	"strings"
 )
 
+type ChatMessageType uint8
+
+const (
+	ChatMessageTypeGeneral ChatMessageType = iota
+	ChatMessageTypeWhisper
+	ChatMessageTypeCountry
+	ChatMessageTypeSystem
+	ChatMessageTypeNotice
+)
+
 type ChatMessage struct {
-	From    string // 2 byte (Player name, Maximum 255 characters)
-	Message string // 2 byte (Maximum 255 characters)
+	Type    ChatMessageType // 1 byte
+	From    string          // 2 byte (Player name, Maximum 255 characters)
+	Message string          // 2 byte (Maximum 255 characters)
 }
 
 func EncodeChatMessage(m *ChatMessage) ([]byte, error) {
 	buf := new(bytes.Buffer)
+
+	buf.WriteByte(byte(m.Type))
 
 	fromBytes := []byte(m.From)
 	fromLen := len(fromBytes)

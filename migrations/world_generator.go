@@ -151,7 +151,8 @@ func (m *WorldGenerator) GenerateWorld(db *gorm.DB) {
 				continue
 			}
 
-			if geometry["type"] == "MultiPolygon" {
+			switch geometry["type"] {
+			case "MultiPolygon":
 				for _, polygonGroup := range coordinates {
 					if pg, ok := polygonGroup.([]interface{}); ok {
 						for _, polygon := range pg {
@@ -159,7 +160,7 @@ func (m *WorldGenerator) GenerateWorld(db *gorm.DB) {
 						}
 					}
 				}
-			} else if geometry["type"] == "Polygon" {
+			case "Polygon":
 				drawPolygon(coordinates[0], country, &tileStore)
 			}
 		}

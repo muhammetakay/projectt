@@ -14,14 +14,16 @@ type Player struct {
 	Rank      byte    // 1 byte (PlayerRank enum)
 	Health    uint32  // 4 byte
 	MaxHealth uint32  // 4 byte
-	CoordX    uint16  // 2 byte
-	CoordY    uint16  // 2 byte
+	CoordX    float32 // 4 byte
+	CoordY    float32 // 4 byte
+	DirX      float32 // 4 byte
+	DirY      float32 // 4 byte
 	UnitID    *uint16 // 2 byte
 }
 
 type PlayerMovementRequest struct {
-	TargetX uint16
-	TargetY uint16
+	DirX, DirY float32
+	Timestamp  float32
 }
 
 type PlayerDataRequest struct {
@@ -29,9 +31,12 @@ type PlayerDataRequest struct {
 }
 
 type PlayerMovementData struct {
-	PlayerID uint32
-	CoordX   uint16
-	CoordY   uint16
+	PlayerID         uint32
+	PosX, PosY       float32
+	DirX, DirY       float32
+	Speed            float32
+	IsMoving         bool
+	LastUpdatedTicks float32
 }
 
 func EncodePlayer(p *Player) ([]byte, error) {
@@ -43,8 +48,10 @@ func EncodePlayer(p *Player) ([]byte, error) {
 	buf.WriteByte(uint8(p.Rank))
 	binary.Write(buf, binary.LittleEndian, uint32(p.Health))
 	binary.Write(buf, binary.LittleEndian, uint32(p.MaxHealth))
-	binary.Write(buf, binary.LittleEndian, uint16(p.CoordX))
-	binary.Write(buf, binary.LittleEndian, uint16(p.CoordY))
+	binary.Write(buf, binary.LittleEndian, float32(p.CoordX))
+	binary.Write(buf, binary.LittleEndian, float32(p.CoordY))
+	binary.Write(buf, binary.LittleEndian, float32(p.DirX))
+	binary.Write(buf, binary.LittleEndian, float32(p.DirY))
 
 	if p.UnitID != nil {
 		buf.WriteByte(1) // has unit
@@ -69,8 +76,13 @@ func EncodePlayerMovementData(m *PlayerMovementData) []byte {
 	buf := new(bytes.Buffer)
 
 	binary.Write(buf, binary.LittleEndian, m.PlayerID)
-	binary.Write(buf, binary.LittleEndian, m.CoordX)
-	binary.Write(buf, binary.LittleEndian, m.CoordY)
+	binary.Write(buf, binary.LittleEndian, m.PosX)
+	binary.Write(buf, binary.LittleEndian, m.PosY)
+	binary.Write(buf, binary.LittleEndian, m.DirX)
+	binary.Write(buf, binary.LittleEndian, m.DirY)
+	binary.Write(buf, binary.LittleEndian, m.Speed)
+	binary.Write(buf, binary.LittleEndian, m.IsMoving)
+	binary.Write(buf, binary.LittleEndian, m.LastUpdatedTicks)
 
 	return buf.Bytes()
 }
@@ -83,13 +95,18 @@ func DecodePlayerMovementRequest(data []byte) (*PlayerMovementRequest, error) {
 	buf := bytes.NewReader(data)
 	m := &PlayerMovementRequest{}
 
-	// TargetX (2 byte)
-	if err := binary.Read(buf, binary.LittleEndian, &m.TargetX); err != nil {
+	// DirX (4 byte)
+	if err := binary.Read(buf, binary.LittleEndian, &m.DirX); err != nil {
 		return nil, err
 	}
 
-	// TargetY (2 byte)
-	if err := binary.Read(buf, binary.LittleEndian, &m.TargetY); err != nil {
+	// DirY (4 byte)
+	if err := binary.Read(buf, binary.LittleEndian, &m.DirY); err != nil {
+		return nil, err
+	}
+
+	// Timestamp (4 byte)
+	if err := binary.Read(buf, binary.LittleEndian, &m.Timestamp); err != nil {
 		return nil, err
 	}
 

@@ -3,7 +3,8 @@ package types
 type MessageType uint8
 
 const (
-	LoginMessage MessageType = iota
+	WelcomeMessage MessageType = iota
+	LoginMessage
 	ChatMessage
 	SystemMessage
 	UnauthorizedMessage

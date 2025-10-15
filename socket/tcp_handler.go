@@ -9,7 +9,6 @@ import (
 	b "projectt/binary"
 	"projectt/config"
 	"projectt/types"
-	"time"
 )
 
 func handleTCPConnection(server *GameServer, conn net.Conn) {
@@ -24,19 +23,20 @@ func handleTCPConnection(server *GameServer, conn net.Conn) {
 	server.mu.Lock()
 	if len(server.connections) >= config.MaxPlayers {
 		server.mu.Unlock()
-		gc.SendMessage(b.Message{
+		gc.SendTCPMessage(b.Message{
 			Type:  types.LoginMessage,
 			Error: "error.server.full",
 		})
 		return
 	}
-	server.connections[gc] = true
+	server.connections[gc.connID] = gc
 	server.mu.Unlock()
 
 	// send welcome message
-	gc.SendMessage(b.Message{
-		Type: types.SystemMessage,
-		Data: []byte("Welcome to Project T!"),
+	data := b.EncodeWelcomeMessage(&b.WelcomeMessage{ConnectionID: gc.connID})
+	gc.SendTCPMessage(b.Message{
+		Type: types.WelcomeMessage,
+		Data: data,
 	})
 
 	// Read messages in a loop
@@ -61,40 +61,7 @@ func handleTCPConnection(server *GameServer, conn net.Conn) {
 			break
 		}
 
-		// Decode and handle message
-		msg, err := b.DecodeRawMessage(data)
-		if err != nil {
-			log.Printf("Error decoding message: %v", err)
-			continue
-		}
-
-		// Update last heartbeat time
-		gc.mu.Lock()
-		gc.lastHeartbeat = time.Now()
-		gc.mu.Unlock()
-
-		// Handle message based on type
-		switch msg.Type {
-		case types.LoginMessage:
-			gc.handleLogin(msg.Data)
-		case types.ChatMessage:
-			gc.handleChat(msg.Data)
-		case types.PlayerMovementMessage:
-			gc.handleMovement(msg.Data)
-		case types.PlayerDataMessage:
-			gc.handlePlayerData(msg.Data)
-		case types.ChunkRequestMessage:
-			gc.handleChunkRequest(msg.Data)
-		case types.DisconnectMessage:
-			server.mu.Lock()
-			gc.handleDisconnect()
-			server.mu.Unlock()
-			return
-		case types.PingPongMessage:
-			gc.handlePingPong(*msg)
-		default:
-			// unknown message
-		}
+		handleMessage(server, gc, data)
 	}
 
 	// Handle disconnection

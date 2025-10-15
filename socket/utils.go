@@ -14,8 +14,10 @@ func getBinaryPlayer(m *models.Player) *binary.Player {
 		Rank:      byte(m.Rank),
 		Health:    uint32(m.Health),
 		MaxHealth: uint32(m.MaxHealth),
-		CoordX:    uint16(m.CoordX),
-		CoordY:    uint16(m.CoordY),
+		CoordX:    float32(m.CoordX),
+		CoordY:    float32(m.CoordY),
+		DirX:      float32(m.DirX),
+		DirY:      float32(m.DirY),
 		UnitID:    m.UnitID,
 	}
 }

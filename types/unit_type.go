@@ -3,7 +3,8 @@ package types
 type UnitType int
 
 const (
-	UnitTypeTank UnitType = iota + 1
+	UnitTypeInfantry UnitType = iota + 1
+	UnitTypeTank
 	UnitTypeShip
 	UnitTypeBattleShip
 	UnitTypeHelicopter

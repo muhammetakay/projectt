@@ -25,7 +25,7 @@ func Seed(db *gorm.DB) {
 	// player
 	testPlayers := []string{"Ryuzaki", "Muhammet", "Ahmet", "Mustafa"}
 	for _, player := range testPlayers {
-		testPlayer := models.Player{Nickname: player, CountryID: country.ID, CoordX: tile.CoordX, CoordY: tile.CoordY}
+		testPlayer := models.Player{Nickname: player, CountryID: country.ID, CoordX: float32(tile.CoordX), CoordY: float32(tile.CoordY)}
 		db.FirstOrCreate(&testPlayer, models.Player{Nickname: testPlayer.Nickname})
 	}
 
