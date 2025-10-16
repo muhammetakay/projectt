@@ -11,7 +11,7 @@ func handleMessage(server *GameServer, gc *GameConnection, data []byte) {
 	// Decode and handle message
 	msg, err := b.DecodeRawMessage(data)
 	if err != nil {
-		log.Printf("Error decoding message: %v", err)
+		log.Printf("Error decoding message: %v - Packet length: %d - Data: %v", err, len(data), data)
 		return
 	}
 

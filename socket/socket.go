@@ -917,8 +917,8 @@ func StartServer() {
 
 		fmt.Printf("UDP server is running on port %s...\n", port)
 
-		buffer := make([]byte, 4096)
 		for {
+			buffer := make([]byte, 128)
 			n, remoteAddr, err := udpConn.ReadFromUDP(buffer)
 			if err != nil {
 				log.Printf("Error reading from UDP connection: %v", err)

@@ -1,7 +1,6 @@
 package socket
 
 import (
-	"bytes"
 	"encoding/binary"
 	"fmt"
 	"log"
@@ -9,18 +8,11 @@ import (
 )
 
 func handleUDPConnection(server *GameServer, conn *net.UDPConn, addr *net.UDPAddr, data []byte) {
-	if len(data) < 1 {
+	if len(data) < 4 {
 		return
 	}
 
-	// Buffer for reading data
-	buf := bytes.NewReader(data)
-
-	// Read connection ID (4 bytes)
-	var connID uint32
-	if err := binary.Read(buf, binary.LittleEndian, &connID); err != nil {
-		return // invalid data
-	}
+	connID := binary.LittleEndian.Uint32(data[0:])
 
 	// Find game connection for this address
 	gc, err := findConnection(server, conn, addr, connID)
