@@ -19,6 +19,8 @@ var (
 	ChunkSize            int
 	MaxChunkViewDistance int
 	MaxViewDistance      int
+	TicksPerSecond       int
+	FixedDeltaTime       time.Duration
 )
 
 func Init() {
@@ -41,6 +43,13 @@ func Init() {
 	}
 
 	MaxViewDistance = ChunkSize * MaxChunkViewDistance
+
+	TicksPerSecond, err = strconv.Atoi(os.Getenv("TICKS_PER_SECOND"))
+	if err != nil {
+		log.Fatalf("Invalid TICKS_PER_SECOND value: %v", err)
+	}
+
+	FixedDeltaTime = time.Duration(TicksPerSecond) * time.Millisecond
 }
 
 func ConnectDatabase() {

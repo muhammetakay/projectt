@@ -22,10 +22,6 @@ var (
 	server *GameServer
 )
 
-const (
-	FixedDeltaTime = time.Second / 20
-)
-
 type GameConnection struct {
 	// TCP client connection
 	conn net.Conn
@@ -970,7 +966,7 @@ func (s *GameServer) cleanupInactiveConnections() {
 }
 
 func (s *GameServer) tickLoop() {
-	duration := time.Second / 20 // 20 ticks per second
+	duration := config.FixedDeltaTime
 	ticker := time.NewTicker(duration)
 	defer ticker.Stop()
 
@@ -1031,8 +1027,8 @@ func (s *GameServer) tickLoop() {
 					normalizedDirY := player.DirY / magnitude
 
 					// Calculate position based on normalized direction, speed and delta time
-					cx += normalizedDirX * speed * float32(FixedDeltaTime.Seconds())
-					cy += normalizedDirY * speed * float32(FixedDeltaTime.Seconds())
+					cx += normalizedDirX * speed * float32(config.FixedDeltaTime.Seconds())
+					cy += normalizedDirY * speed * float32(config.FixedDeltaTime.Seconds())
 				}
 
 				// Check if new position is walkable
