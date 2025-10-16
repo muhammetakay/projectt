@@ -1,7 +1,6 @@
 package models
 
 import (
-	"encoding/json"
 	"math"
 	"projectt/types"
 	"time"
@@ -22,18 +21,12 @@ type Player struct {
 	CoordY    float32          `json:"coord_y" gorm:"default:0"`
 	DirX      float32          `json:"dir_x" gorm:"default:0"`
 	DirY      float32          `json:"dir_y" gorm:"default:0"`
-	UnitID    *uint16          `json:"unit_id" gorm:"type:tinyint;null"` // ID of the unit the player is controlling
-	Unit      *Unit            `json:"unit,omitempty" gorm:"foreignKey:UnitID;references:ID"`
+	UnitID    *uint            `json:"unit_id"`
+	Unit      *Unit            `json:"unit" gorm:"constraint:OnUpdate:CASCADE,OnDelete:SET NULL;"`
 
 	// Movement fields
 	LastUpdatedTicks float32   `json:"last_updated_ticks" gorm:"-"`
 	LastUpdated      time.Time `json:"last_updated" gorm:"-"`
-}
-
-func (m Player) MarshalJSON() ([]byte, error) {
-	type Alias Player
-	m.Level = m.GetLevel()
-	return json.Marshal(Alias(m))
 }
 
 func (m *Player) Copy() *Player {

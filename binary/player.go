@@ -18,7 +18,7 @@ type Player struct {
 	CoordY    float32 // 4 byte
 	DirX      float32 // 4 byte
 	DirY      float32 // 4 byte
-	UnitID    *uint16 // 2 byte
+	UnitID    *uint   // 4 byte
 }
 
 type PlayerMovementRequest struct {
@@ -55,10 +55,10 @@ func EncodePlayer(p *Player) ([]byte, error) {
 
 	if p.UnitID != nil {
 		buf.WriteByte(1) // has unit
-		binary.Write(buf, binary.LittleEndian, uint16(*p.UnitID))
+		binary.Write(buf, binary.LittleEndian, uint32(*p.UnitID))
 	} else {
 		buf.WriteByte(0)
-		binary.Write(buf, binary.LittleEndian, uint16(0)) // dummy
+		binary.Write(buf, binary.LittleEndian, uint32(0)) // dummy
 	}
 
 	nickBytes := []byte(p.Nickname)

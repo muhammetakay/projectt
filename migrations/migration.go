@@ -13,7 +13,7 @@ func Migrate(db *gorm.DB) {
 	// create tables
 	err := db.AutoMigrate(
 		&models.Country{}, &models.MapTile{},
-		&models.Unit{}, &models.Player{},
+		&models.Player{}, &models.Unit{},
 	)
 	if err != nil {
 		log.Fatal("Migration failed:", err)

@@ -1,6 +1,6 @@
 package types
 
-type UnitType int
+type UnitType uint8
 
 const (
 	UnitTypeInfantry UnitType = iota + 1
